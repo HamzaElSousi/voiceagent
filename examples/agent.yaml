@@ -1,0 +1,67 @@
+# agent.yaml: the entire script, persona, and policy for one VoiceAgent.
+# Secrets (API keys) never go here. They live in .env.
+
+agent:
+  name: Alex
+  voice_id: EXAVITQu4vr4xnSDxMaL    # ElevenLabs voice ID
+  persona: |
+    You are Alex, a friendly sales rep for Acme Corp.
+    Keep responses under 2 sentences. Never be pushy.
+    If you don't know something, say "I'll have someone follow up."
+
+# Which LLM generates the agent's turns. Provider-agnostic; Haiku is the low-latency default.
+llm:
+  provider: claude
+  model: claude-haiku-4-5
+  max_tokens: 150
+  temperature: 0.6
+
+# Which audio pipeline drives the call. "assembled" = Deepgram + Claude + ElevenLabs (full
+# control of the latency budget). "realtime" = single-socket Realtime API (interface stub for now).
+pipeline:
+  mode: assembled            # assembled | realtime
+
+# Turn-taking. Deepgram endpointing: silence (ms) that marks the contact finished speaking
+# (the fast primary signal). Lower feels snappier; too low cuts the contact off mid-sentence.
+endpointing_ms: 250
+# Word-gap fallback (ms) for noisy telephony when endpointing misses the pause. Deepgram minimum
+# is 1000. Turns are assembled from the transcript, so this only matters when speech_final misses.
+utterance_end_ms: 1000
+
+script:
+  greeting: "Hi, is this {contact_name}? This is Alex from Acme Corp. Do you have 30 seconds?"
+  value_prop: "We help teams like yours cut project delays by 40%. Would you be open to a 15-minute demo this week?"
+
+  objections:
+    - trigger: "not interested"
+      response: "Totally understand. Is it timing, or is it not a priority right now?"
+    - trigger: "too busy"
+      response: "No problem. Can I send you a 2-minute video instead?"
+    - trigger: "already have something"
+      response: "What are you using? Most teams switch after hitting limitations with their current tool."
+
+  max_objections: 2
+  booking_signal: "yes|sure|okay|sounds good|let's do it"
+  booking_response: "Perfect! I'll send a calendar invite to {contact_email}. Does {suggested_time} work?"
+  end_signal: "goodbye|not interested|remove me"
+
+outcomes: [booked_meeting, callback_requested, not_interested, voicemail, no_answer]
+
+# Hard cost caps. The cost meter tracks all four meters (Deepgram seconds, Claude tokens,
+# ElevenLabs characters, Twilio minutes) and ends a call gracefully before it overspends.
+limits:
+  per_call_usd: 0.15
+  per_campaign_usd: 25.00
+
+# Compliance is on by default. Outbound sales calls carry legal weight (TCPA and similar).
+compliance:
+  ai_disclosure: "Before we start, I want to let you know I'm an AI assistant calling on behalf of Acme Corp."
+  disclose_in_greeting: true
+  recording_consent: "This call may be recorded for quality. Is that okay?"
+  require_recording_consent: false
+  opt_out_phrases: ["remove me", "do not call", "take me off", "stop calling"]
+  do_not_call_file: "do_not_call.csv"     # suppressed numbers; checked before dialing
+  calling_hours:
+    start: "09:00"
+    end: "20:00"
+    timezone: "America/New_York"

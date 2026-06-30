@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VoiceAgent Demo</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           margin: 0; background: #0f1115; color: #e6e6e6; }
+    header { padding: 18px 24px; background: #161a22; border-bottom: 1px solid #262b36; }
+    header h1 { margin: 0; font-size: 18px; }
+    header p { margin: 4px 0 0; color: #9aa4b2; font-size: 13px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; }
+    .panel { background: #161a22; border: 1px solid #262b36; border-radius: 10px; padding: 16px; }
+    .panel h2 { margin: 0 0 10px; font-size: 14px; color: #c7d0db; }
+    textarea { width: 100%; height: 360px; box-sizing: border-box; background: #0f1115;
+               color: #e6e6e6; border: 1px solid #2b313d; border-radius: 8px; padding: 10px;
+               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    input[type=text] { flex: 1; min-width: 200px; background: #0f1115; color: #e6e6e6;
+                       border: 1px solid #2b313d; border-radius: 8px; padding: 8px; font-size: 13px; }
+    button { background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 9px 14px;
+             font-size: 13px; cursor: pointer; }
+    button.secondary { background: #2b313d; }
+    .status { margin-top: 10px; font-size: 13px; }
+    .ok { color: #59d499; } .err { color: #ff7b72; }
+    .turn { padding: 6px 0; border-bottom: 1px solid #20252f; font-size: 13px; }
+    .turn .who { color: #8ab4ff; font-weight: 600; }
+    .turn .contact { color: #f0c674; }
+    .metrics { display: flex; gap: 18px; margin: 10px 0; flex-wrap: wrap; font-size: 13px; }
+    .metric b { display: block; font-size: 18px; color: #fff; }
+    .muted { color: #9aa4b2; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>VoiceAgent Demo Console</h1>
+    <p>Edit the agent config, validate it, and run a fully mocked call. No API keys needed.</p>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>agent.yaml</h2>
+      <textarea id="yaml" spellcheck="false"></textarea>
+      <div class="row">
+        <button onclick="validateConfig()">Validate</button>
+        <button class="secondary" onclick="loadConfig()">Reload from server</button>
+        <span id="cfgStatus" class="status"></span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Mocked call</h2>
+      <div class="muted">Contact turns, one per line. Defaults simulate a contact who books.</div>
+      <div class="row">
+        <input id="turns" type="text"
+               placeholder="yeah who is this | okay sounds good lets do it" />
+        <button onclick="runDemo()">Run mocked call</button>
+      </div>
+      <div id="metrics" class="metrics"></div>
+      <div id="transcript"></div>
+      <div id="demoStatus" class="status"></div>
+    </section>
+  </main>
+
+  <script>
+    async function loadConfig() {
+      const r = await fetch('/ui/config');
+      const j = await r.json();
+      document.getElementById('yaml').value = j.yaml_text || '';
+      setStatus('cfgStatus', 'Loaded ' + (j.path || ''), true);
+    }
+    function setStatus(id, msg, ok) {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.className = 'status ' + (ok ? 'ok' : 'err');
+    }
+    async function validateConfig() {
+      const yaml_text = document.getElementById('yaml').value;
+      const r = await fetch('/ui/validate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ yaml_text })
+      });
+      const j = await r.json();
+      if (j.valid) {
+        setStatus('cfgStatus',
+          'Valid. pipeline=' + j.pipeline_mode + ', llm=' + j.llm_model +
+          ', objections=' + j.objections, true);
+      } else {
+        setStatus('cfgStatus', j.message, false);
+      }
+    }
+    async function runDemo() {
+      const yaml_text = document.getElementById('yaml').value;
+      const raw = document.getElementById('turns').value.trim();
+      const turns = raw ? raw.split('|').map(s => s.trim()).filter(Boolean) : [];
+      setStatus('demoStatus', 'Running mocked call...', true);
+      const r = await fetch('/ui/demo', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ yaml_text, turns })
+      });
+      if (!r.ok) { const e = await r.json(); setStatus('demoStatus', e.error || 'error', false); return; }
+      const j = await r.json();
+      document.getElementById('metrics').innerHTML =
+        metric('Outcome', j.outcome) + metric('p50 latency', j.p50_latency_ms + ' ms') +
+        metric('Cost', '$' + j.cost_usd) + metric('Duration', j.duration_seconds + ' s');
+      document.getElementById('transcript').innerHTML = j.transcript.map(t =>
+        '<div class="turn"><span class="' + (t.speaker === 'agent' ? 'who' : 'contact') + '">' +
+        t.speaker + '</span>: ' + escapeHtml(t.text) + '</div>').join('');
+      setStatus('demoStatus', j.end_reason, true);
+    }
+    function metric(label, value) {
+      return '<div class="metric">' + label + '<b>' + value + '</b></div>';
+    }
+    function escapeHtml(s) {
+      return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
+    loadConfig();
+  </script>
+</body>
+</html>

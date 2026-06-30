@@ -1,0 +1,15 @@
+services:
+  voiceagent:
+    build: .
+    image: voiceagent:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    # Mount your own agent.yaml and contacts over the bundled examples.
+    volumes:
+      - ./examples:/app/examples:ro
+      - ./call_logs:/app/call_logs
+    environment:
+      VOICEAGENT_CONFIG: /app/examples/agent.yaml
+    restart: unless-stopped
