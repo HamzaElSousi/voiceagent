@@ -83,4 +83,7 @@ Legend: [x] done, [~] in progress, [ ] not started
 - [x] M2-4 Per-hop latency: endpoint -> LLM first token -> TTS first audio -> sent, into events log
 - [x] M2-5 OpenRouter LLM behind the LLM interface (llm.provider: openrouter); Claude stays default; test
 - [x] Full suite green (144 tests); realistic timing sim: 0 stalls, 0 false barge-ins, books
-- [ ] M2-6 commit + push (gated on remote choice), then live retest with per-hop p50 report
+- [x] M2-6 commit + push, then live retest with per-hop p50 report
+      Live retest 2026-07-02 (SID CA02e7a1...2380): endpoint->first-audio p50 ~130ms
+      (turns: 141ms, 119ms) vs ~892ms before. Outcome booked_meeting, 0 false barge-ins,
+      clean end, no socket errors. Perceived ~400ms incl. Deepgram 250ms endpointing.

@@ -5,43 +5,54 @@ without re-discovering them. Grouped as Open, Fixed, and Gotchas. Newest context
 section. See `CLAUDE.md` for project orientation and `call_logs/events/<call_sid>.jsonl` for the
 per-call timeline that drives most of this diagnosis.
 
-## Status snapshot (2026-06-30)
-The pipeline works mocked and on real calls (a call even booked a meeting), but live calls feel
-laggy. Root cause is implementation, not the architecture. Milestone 2 is fixing latency and
-turn-taking while keeping the Twilio -> Deepgram -> LLM -> ElevenLabs design and Claude as default.
-Measured response lag was ~892ms; target is sub-500ms.
+## Status snapshot (2026-07-02)
+Milestone 2 latency + turn-taking fixes are DONE and validated on a live call. endpoint->first-audio
+p50 is ~130ms (was ~892ms), target was sub-500ms. Live retest SID CA02e7a1...2380 booked a meeting
+with 0 false barge-ins, clean end, no socket errors. All O1-O4 below are fixed (see F5-F8). The
+Twilio -> Deepgram -> LLM -> ElevenLabs design and Claude default are intact; OpenRouter is available
+as a model-agnostic alternative behind the LLM interface.
 
 ---
 
-## Open (being fixed in Milestone 2)
+## Open
 
-### O1. ElevenLabs opens a new WebSocket per sentence (biggest latency cost)
-`tts/elevenlabs.py` `synthesize()` calls `websockets.connect(...)` on every call, and the pipeline
-calls `synthesize()` once per sentence. Each sentence pays a TCP/TLS handshake + BOS setup before
-any audio (~50-200ms each, compounding across sentences). It also corrupts socket state between
-turns, which caused a turn to fail with `WebSocketDisconnect` / "Cannot call send once a close
-message has been sent". Fix: hold ONE socket open per call, stream each sentence as text+flush,
-reconnect only on real error. (Milestone 2, fix #1.)
-
-### O2. UtteranceEnd turn detection dropped (regression I introduced; multi-second stalls)
-Deepgram signals end-of-turn two ways: a Results message with `speech_final=true` (carries text),
-and a separate `UtteranceEnd` message (empty text, the noisy-telephony fallback). A session change
-to "ignore empty-transcript endpoints" (added to suppress noise/echo) now also drops the
-`UtteranceEnd` signal, so when `speech_final` does not fire the contact's turn is not detected until
-the 8s silence timeout. Fix: accumulate transcript text and, on any ENDPOINT, flush the accumulated
-text as the turn; ignore only when nothing accumulated. (Milestone 2, fix #2.)
-
-### O3. Turn-end detection latency not yet tuned for sub-500ms
-`endpointing_ms=300` and `utterance_end_ms=1000` are defaults in `stt/deepgram.py` and not yet
-exposed in `agent.yaml`. Tune lower and make configurable. (Milestone 2, fix #3.)
-
-### O4. Per-hop latency is not separable
-Current logging gives one endpoint-to-first-audio number; we cannot tell LLM time from TTS time.
-Add timestamps for endpoint, LLM first token, TTS first byte, audio first sent. (Milestone 2, fix #4.)
+None. All Milestone 2 issues resolved and validated live (see Fixed F5-F8). Next possible work if
+lag resurfaces: trim `endpointing_ms` below 250 to shave the ~250ms Deepgram VAD window off perceived
+latency (trade: occasional early cut-in), or pivot to a single-socket realtime API (OpenAI Realtime)
+if a further step-change is needed (leaves Claude; see G4).
 
 ---
 
 ## Fixed
+
+### F8. Per-hop latency was not separable (was O4)
+Logging gave one endpoint-to-first-audio number; LLM vs TTS time was invisible. Fixed: `session.py`
+now logs a `latency` event per turn with `endpoint_to_token_ms`, `token_to_audio_ms`,
+`endpoint_to_audio_ms` into `call_logs/events/<sid>.jsonl` and `LatencySample`. Live retest showed
+LLM token ~0.3ms, TTS first audio ~120-140ms, i.e. TTS is the remaining cost, not the LLM.
+
+### F7. Turn-end detection not tuned/configurable (was O3)
+`endpointing_ms` and `utterance_end_ms` are now `agent.yaml` fields (defaults 250 / 1000) wired
+through `config.py` -> `builder.py` -> `stt/deepgram.py` `_build_url`. Test: `tests/test_ws_connect.py`
+plus config round-trip in `tests/test_config.py`.
+
+### F6. UtteranceEnd turn detection dropped (was O2; regression, multi-second stalls)
+The "ignore empty-transcript endpoints" change dropped Deepgram's `UtteranceEnd` turn signal (empty
+text), stalling turns to the 8s timeout when `speech_final` did not fire. Fixed: `session.py`
+accumulates FINAL text in `_utterance_parts` and, on any ENDPOINT, flushes the accumulated text as
+the turn (falling back to the event's own text); only genuinely empty turns are ignored
+("endpoint_empty"). Tests: turn assembled from FINAL + empty UtteranceEnd; pure-noise empty ignored.
+
+### F5. ElevenLabs opened a new WebSocket per sentence (was O1; biggest latency cost)
+`synthesize()` connected a fresh WebSocket per sentence, paying a TCP/TLS + BOS handshake before
+each sentence (~50-200ms compounding) and corrupting socket state between turns (turn-2
+`WebSocketDisconnect` / "Cannot call send once a close message has been sent"). Fixed: `tts/elevenlabs.py`
+holds ONE persistent multi-context socket per call (`_ensure_socket`/`_drop_socket`/`_synthesize_multi`),
+pre-warmed at `connect()`, streaming each sentence as init+text+flush+close_context and reconnecting
+only on real error (`_synthesize_oneshot` kept as fallback). This was the dominant win: first-audio
+dropped to ~130ms. Test: `tests/test_elevenlabs_persistent.py` (one connect across sentences).
+
+
 
 ### F1. websockets v12 vs v13 kwarg (call-killer)
 `stt/deepgram.py` called `websockets.connect(url, additional_headers=...)` (the v13+ name) while the
