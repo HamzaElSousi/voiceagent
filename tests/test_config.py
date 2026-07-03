@@ -68,7 +68,7 @@ def test_extra_field_rejected(tmp_path):
 
 def test_max_tokens_not_flagged_as_secret(cfg):
     # Regression: 'max_tokens' contains 'token' but must not trip secret rejection.
-    assert cfg.llm.max_tokens == 150
+    assert cfg.llm.max_tokens == 100
 
 
 def test_settings_missing_for_live_call_lists_all_when_empty(monkeypatch):

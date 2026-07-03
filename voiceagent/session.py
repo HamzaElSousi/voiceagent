@@ -60,6 +60,7 @@ class CallSession:
         echo_guard_seconds: float = 0.6,
         playback_margin_seconds: float = 0.4,
         events_dir: Optional[str] = "call_logs/events",
+        prewarm_llm: bool = True,
     ):
         self.engine = engine
         self.pipeline = pipeline
@@ -84,6 +85,9 @@ class CallSession:
         # Extra wait beyond raw audio duration to cover network and carrier playback buffering.
         self.playback_margin_seconds = playback_margin_seconds
         self.events_dir = events_dir
+        # Warm the LLM connection during the greeting to hide its cold-start. Turned off for
+        # scripted-fake tests, where a warmup call would consume a canned FakeLLM response.
+        self.prewarm_llm = prewarm_llm
 
         self._turns: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self._utterance_parts: list[str] = []  # FINAL transcript segments since the last endpoint
@@ -115,23 +119,52 @@ class CallSession:
         self._started_at = time.perf_counter()
         outcome, reason = Outcome.ERROR, "session did not start"
         listen_task: Optional[asyncio.Task] = None
+        prewarm_task: Optional[asyncio.Task] = None
         try:
             await self.pipeline.start(self.media)
             listen_task = asyncio.create_task(self._listen())
+            # Warm the LLM connection concurrently with the greeting so the first real turn does
+            # not pay the ~13s cold-start (client + DNS/TLS). Best-effort; failures are ignored.
+            if self.prewarm_llm:
+                prewarm_task = asyncio.create_task(self._prewarm_llm())
             outcome, reason = await self._converse()
         except Exception as exc:  # never let an integration error escape as a crash
             self._errors.append(repr(exc))
             outcome, reason = Outcome.ERROR, f"session error: {exc}"
         finally:
-            if listen_task is not None:
-                listen_task.cancel()
-                try:
-                    await listen_task
-                except asyncio.CancelledError:
-                    pass
+            for task in (listen_task, prewarm_task):
+                if task is not None:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
             await self._safe(self.pipeline.close())
             await self._safe(self.media.close())
         return self._build_result(outcome, reason)
+
+    async def _prewarm_llm(self) -> None:
+        """Fire a tiny throwaway generation to establish the LLM's HTTP connection before the first
+        real turn. Runs during the greeting so its cold-start is hidden. Best-effort: any error
+        (and cancellation at call end) is swallowed."""
+
+        llm = getattr(self.engine, "llm", None)
+        if llm is None:
+            return
+        try:
+            agen = llm.stream([{"role": "user", "content": "hi"}], system="Reply with: ok")
+            try:
+                async for _ in agen:
+                    break  # first token means the connection is warm; stop immediately
+            finally:
+                aclose = getattr(agen, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+            self._log("llm_prewarmed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._errors.append(f"prewarm: {exc!r}")
 
     # -- background listener (turn-taking + barge-in) ----------------------------------------
 

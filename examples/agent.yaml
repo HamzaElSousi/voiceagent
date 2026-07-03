@@ -13,7 +13,7 @@ agent:
 llm:
   provider: claude
   model: claude-haiku-4-5
-  max_tokens: 150
+  max_tokens: 100          # ~2 short sentences; caps runaway replies that add call latency
   temperature: 0.6
 
 # Which audio pipeline drives the call. "assembled" = Deepgram + Claude + ElevenLabs (full

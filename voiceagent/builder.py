@@ -115,9 +115,11 @@ def build_session(
     stt: Optional[STT] = None,
     tts: Optional[TTS] = None,
     compliance: Optional[ComplianceGate] = None,
+    prewarm_llm: bool = True,
 ) -> CallSession:
     """Assemble a ready-to-run CallSession. Inject llm/stt/tts to drive it with fakes in tests;
-    omit them to build real provider clients from settings (live)."""
+    omit them to build real provider clients from settings (live). Pass prewarm_llm=False for
+    mocked runs so the warmup call does not consume a scripted FakeLLM response."""
 
     meter = DollarCostMeter(per_call_cap_usd=config.limits.per_call_usd)
     engine = build_engine(
@@ -133,4 +135,5 @@ def build_session(
         silence_timeout=8.0,
         max_silences=2,
         barge_in_enabled=config.barge_in,
+        prewarm_llm=prewarm_llm,
     )

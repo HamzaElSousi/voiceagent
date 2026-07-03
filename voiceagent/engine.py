@@ -175,8 +175,9 @@ class ConversationEngine:
             f'your own words, do not read it verbatim: "{pitch}"',
             "",
             "Rules:",
-            "- Keep every reply to at most two short, spoken sentences. No lists, no markdown, no "
-            "stage directions or emoji.",
+            "- Keep every reply to at most two short spoken sentences, never more than about 30 "
+            "words total. Brevity matters on a phone call. No lists, no markdown, no stage "
+            "directions or emoji.",
             "- Be genuinely helpful and never pushy. If they are clearly not interested after you "
             "have made your case once, thank them warmly and let them go.",
             "- Answer honestly and briefly. If they ask who you are or if you are an AI, say yes, "

@@ -80,6 +80,8 @@ def test_voice(
         # the demo shows a clean back-and-forth. Barge-in is exercised in the test suite.
         stt=FakeSTT.from_turns(turns, include_speech_start=False),
         tts=FakeTTS(),
+        # Mocked run: skip LLM pre-warm so it doesn't consume a scripted FakeLLM response.
+        prewarm_llm=False,
     )
     # A short silence timeout keeps the mocked run snappy.
     session.silence_timeout = 0.3

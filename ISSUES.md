@@ -22,6 +22,23 @@ the conversation core as **LLM-driven + guardrails** (the LLM drives every turn;
 compliance + booking guards). Done in code + tests (see F9-F12). Booking currently only LOGS the
 intent; live cal.com booking is a future goal (PRD.md). Remaining open item is live validation:
 
+### O9. Barge-in storm: one utterance re-triggers barge-in repeatedly
+Live retest 2 (SID CAc871...ebd): the contact saying "Saturday at ten." fired barge_in ~6 times
+(10 total in the call). The `_barge_in_locked` / one-shot guard is not holding across the partial+
+final transcript updates of a single utterance, so each update re-triggers a barge-in. Fix: latch
+barge-in per utterance until the agent's next turn actually starts, and/or debounce on the same text.
+
+### O10. Echo: the agent's own speech is transcribed back as a contact turn
+Same call: a "contact" endpoint read "In general, yes. This week works. I have availability on,
+let's say," which is the agent's own offered times echoed into the STT, and it tangled the booking.
+Without acoustic echo cancellation, agent audio leaks into Deepgram. Fix: stronger echo gating
+(suppress transcripts while/just after the agent is speaking) or feed a reference for cancellation.
+
+### O11. Booking closes before the contact finishes giving the time
+Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
+"Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
+booking must capture the actual time/slot before closing. Tracked with the cal.com future goal.
+
 ### O8. Adversarial paths not yet validated live
 The rebuilt core is verified offline (fakes), but on a real call only the happy path has ever been
 exercised. Need live runs that argue, ask "who is this / how did you get my number / are you an AI",
@@ -31,6 +48,19 @@ give a soft "not interested", opt out mid-call, go silent, and confirm a booking
 ---
 
 ## Fixed
+
+### F13. LLM cold-start caused ~13-18s dead air on the first turn of every call
+Live retest 1 showed the first contact turn taking 18s to first audio (endpoint_to_token_ms=18046).
+Root cause: each call builds a fresh LLM client, so the first `stream()` pays client creation +
+DNS/TLS (~13s under WSL2); warm calls are ~0.85-0.95s TTFT. This was invisible in M2 because
+value_prop/booking were static script lines (LLM off the latency path). Fixed: `session.py`
+`_prewarm_llm()` fires a tiny throwaway generation concurrently with the greeting so the cold-start
+is hidden; the first real turn is warm. Gated by `prewarm_llm` (off for scripted-fake tests/CLI so
+the warmup does not consume a canned FakeLLM response). Live retest 2 (SID CAc871...ebd): first-turn
+endpoint_to_audio dropped to ~0.96s, later turns ~0.86-1.4s; it handled "who is this / how did you
+get my number" and booked. Honest latency floor for a live LLM turn here is ~0.9s (LLM ~0.5-0.8s +
+TTS ~0.4-0.6s) + ~250ms Deepgram endpointing, i.e. perceived ~1.2-1.6s; the sub-500ms figure only
+ever held for static lines. Also trimmed reply length (max_tokens 100 + a ~30-word prompt cap).
 
 ### F12. No handling for legitimacy challenges or real pushback (was O7)
 "Who is this?", "How did you get my number?", "Is this a robot?", and genuine arguments used to fall

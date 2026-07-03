@@ -92,6 +92,7 @@ def make_session(cfg, dnc_path, contact):
             max_silences=max_silences,
             max_turns=20,
             events_dir=None,  # no per-call timeline files during tests
+            prewarm_llm=False,  # a warmup call would consume a scripted FakeLLM response
         )
         return session, engine, tts, media, meter
 
