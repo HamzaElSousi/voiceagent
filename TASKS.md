@@ -103,6 +103,12 @@ intent only for now; cal.com booking is a future goal (PRD.md).
 - [x] M3-6 Interruptible-after-disclosure greeting: engine.opening() splits disclosure (played
       non-interruptibly for compliance) from the greeting (interruptible so the contact can jump in);
       session plays them as two segments. Decision from user 2026-07-02.
-- [ ] M3-7 User runs pytest; then adversarial FREESTYLE live retest (O8): user improvises hard cases
-      (argue, "who is this / how'd you get my number", soft-no, opt-out mid-call, silence, booking).
-      Restart server first (running old code). Read events log + transcript, tune. GATED on user "go".
+- [x] M3-7 Freestyle live retest 1+2. Fixed the ~18s first-turn dead air (F13, LLM cold-start ->
+      per-call pre-warm during greeting; warm turns ~0.9-1.4s). It handled "who is this / how'd you
+      get my number" and booked. Surfaced turn-taking bugs O9/O10 (below).
+- [x] M3-8 Barge-in storm fixed (F14): latch barge-in once per agent turn.
+- [x] M3-9 Echo fixed (F15): drop agent-audio transcribed back (overlap vs in-flight text), for both
+      turn capture and barge-in; short genuine replies always trusted. Full suite green (152).
+- [ ] M3-10 Next FREESTYLE live retest (O8 still open): verify barge-in storm + echo are gone, plus
+      opt-out mid-call and silence. Restart server (new code) first. GATED on user "go".
+      O11 (booking captures the real time) deferred to the cal.com integration.

@@ -140,6 +140,84 @@ async def test_barge_in_gating_ignores_echo_and_noise(make_session):
     assert session._barge_ins == 1
 
 
+async def test_barge_in_latched_once_per_utterance(make_session):
+    """One contact utterance produces many PARTIAL/FINAL updates; barge-in must fire at most once,
+    not a storm. Regression guard for ISSUES.md O9."""
+
+    session, *_ = make_session(turns=[])
+    session._agent_speaking = True
+    session._agent_speak_started_at = time.perf_counter() - 1.0
+    for _ in range(6):  # simulate repeated transcript updates of the same utterance
+        session._maybe_barge_in("wait stop hold on a second")
+    await asyncio.sleep(0)  # let the scheduled barge_in task run
+    assert session._barge_ins == 1
+
+
+async def test_latch_resets_for_next_agent_turn(make_session):
+    session, _engine, tts, media, _meter = make_session(turns=[])
+    session._agent_speaking = True
+    session._agent_speak_started_at = time.perf_counter() - 1.0
+    session._maybe_barge_in("wait stop hold on")
+    assert session._barge_ins == 1
+    # A new agent turn clears the latch so a later interruption can fire again.
+    from voiceagent.engine import AgentReply
+
+    async def line():
+        yield "Okay, go ahead."
+
+    await session._speak_reply(AgentReply(text_stream=line(), state=session.engine.state))
+    assert session._barge_in_fired is False
+
+
+async def test_echo_transcript_not_captured_as_turn(make_session):
+    """The agent's own audio transcribed back (long, high word-overlap) must not become a contact
+    turn while the agent is speaking. Regression guard for ISSUES.md O10."""
+
+    from voiceagent.contracts import STTEvent, STTEventType
+
+    session, *_ = make_session(turns=[])
+    session._agent_speaking = True
+    session._agent_current_text = "We help teams cut project delays and ship faster this week"
+
+    async def fake_events():
+        yield STTEvent(type=STTEventType.FINAL, text="we help teams cut project delays", is_final=True)
+        yield STTEvent(type=STTEventType.ENDPOINT, text="")
+
+    session.pipeline.user_events = fake_events
+    await session._listen()
+    assert session._turns.empty()  # echo dropped, no spurious turn
+
+
+async def test_real_reply_during_agent_speech_is_kept(make_session):
+    """A genuine contact turn that does not overlap the agent's words is kept even while the agent
+    is speaking, so echo suppression does not silence real interruptions."""
+
+    from voiceagent.contracts import STTEvent, STTEventType
+
+    session, *_ = make_session(turns=[])
+    session._agent_speaking = True
+    session._agent_current_text = "We help teams cut project delays"
+
+    async def fake_events():
+        yield STTEvent(type=STTEventType.FINAL, text="how did you get my number", is_final=True)
+        yield STTEvent(type=STTEventType.ENDPOINT, text="")
+
+    session.pipeline.user_events = fake_events
+    await session._listen()
+    assert not session._turns.empty()
+    text, _at = session._turns.get_nowait()
+    assert text == "how did you get my number"
+
+
+async def test_short_reply_repeating_agent_word_is_not_echo(make_session):
+    # A short confirmation that repeats a word the agent said must NOT be dropped as echo.
+    session, *_ = make_session(turns=[])
+    session._agent_speaking = True
+    session._agent_current_text = "Would Saturday at ten work for you?"
+    assert session._looks_like_echo("Saturday") is False
+    assert session._looks_like_echo("yes that works") is False
+
+
 async def test_barge_in_disabled_is_half_duplex(make_session):
     session, *_ = make_session(turns=[])
     session.barge_in_enabled = False

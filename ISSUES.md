@@ -22,18 +22,6 @@ the conversation core as **LLM-driven + guardrails** (the LLM drives every turn;
 compliance + booking guards). Done in code + tests (see F9-F12). Booking currently only LOGS the
 intent; live cal.com booking is a future goal (PRD.md). Remaining open item is live validation:
 
-### O9. Barge-in storm: one utterance re-triggers barge-in repeatedly
-Live retest 2 (SID CAc871...ebd): the contact saying "Saturday at ten." fired barge_in ~6 times
-(10 total in the call). The `_barge_in_locked` / one-shot guard is not holding across the partial+
-final transcript updates of a single utterance, so each update re-triggers a barge-in. Fix: latch
-barge-in per utterance until the agent's next turn actually starts, and/or debounce on the same text.
-
-### O10. Echo: the agent's own speech is transcribed back as a contact turn
-Same call: a "contact" endpoint read "In general, yes. This week works. I have availability on,
-let's say," which is the agent's own offered times echoed into the STT, and it tangled the booking.
-Without acoustic echo cancellation, agent audio leaks into Deepgram. Fix: stronger echo gating
-(suppress transcripts while/just after the agent is speaking) or feed a reference for cancellation.
-
 ### O11. Booking closes before the contact finishes giving the time
 Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
 "Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
@@ -48,6 +36,24 @@ give a soft "not interested", opt out mid-call, go silent, and confirm a booking
 ---
 
 ## Fixed
+
+### F15. Echo: the agent's own speech transcribed back as a contact turn (was O10)
+Without acoustic echo cancellation, Deepgram transcribes the agent's own audio (during playback and
+a short carrier tail after), which could become a spurious contact turn and tangle the conversation.
+Fixed: `session.py` captures the agent's in-flight text (`_capture_agent_text`) and
+`_looks_like_echo()` drops a transcript when, while the agent is speaking or within
+`echo_tail_seconds`, it is a long (>=4 word) transcript that overlaps the agent's own words >=80%.
+Short genuine replies (even ones repeating a word the agent said, like "Saturday at ten works") are
+always trusted. Applied to both turn capture (`_listen`) and barge-in (reason `echo_text`). Tests:
+`test_echo_transcript_not_captured_as_turn`, `test_real_reply_during_agent_speech_is_kept`,
+`test_short_reply_repeating_agent_word_is_not_echo`. (For a stubborn environment, `barge_in: false`
+in agent.yaml gives a robust half-duplex call.)
+
+### F14. Barge-in storm: one utterance re-triggered barge-in repeatedly (was O9)
+Live retest 2 (SID CAc871...ebd): "Saturday at ten." fired barge-in ~6 times because
+`_maybe_barge_in` ran on every PARTIAL/FINAL update with no latch. Fixed: `session.py` latches
+`_barge_in_fired` per agent turn (reset at each `_speak_reply` start), so one utterance interrupts at
+most once. Tests: `test_barge_in_latched_once_per_utterance`, `test_latch_resets_for_next_agent_turn`.
 
 ### F13. LLM cold-start caused ~13-18s dead air on the first turn of every call
 Live retest 1 showed the first contact turn taking 18s to first audio (endpoint_to_token_ms=18046).

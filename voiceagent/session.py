@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -40,6 +41,10 @@ logger = logging.getLogger("voiceagent.session")
 
 _FILLER_LINE = "Sorry about that, could you say that again?"
 
+# Word tokens for echo overlap (letters/digits/apostrophes), used to compare a transcript against
+# the agent's own in-flight speech.
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
 
 class CallSession:
     def __init__(
@@ -58,6 +63,7 @@ class CallSession:
         barge_in_enabled: bool = True,
         barge_in_min_chars: int = 2,
         echo_guard_seconds: float = 0.6,
+        echo_tail_seconds: float = 0.6,
         playback_margin_seconds: float = 0.4,
         events_dir: Optional[str] = "call_logs/events",
         prewarm_llm: bool = True,
@@ -82,6 +88,10 @@ class CallSession:
         self.barge_in_enabled = barge_in_enabled
         self.barge_in_min_chars = barge_in_min_chars
         self.echo_guard_seconds = echo_guard_seconds
+        # Without acoustic echo cancellation, the agent's own audio is transcribed back by the STT
+        # (during playback and for a short tail after). Such transcripts overlap the agent's words,
+        # so they are dropped as echo rather than processed as a contact turn or a barge-in.
+        self.echo_tail_seconds = echo_tail_seconds
         # Extra wait beyond raw audio duration to cover network and carrier playback buffering.
         self.playback_margin_seconds = playback_margin_seconds
         self.events_dir = events_dir
@@ -94,7 +104,10 @@ class CallSession:
         self._agent_speaking = False
         self._user_speaking = False
         self._barge_in_locked = False  # set while speaking a non-interruptible turn (the greeting)
+        self._barge_in_fired = False   # latched per agent turn so one utterance fires barge-in once
         self._agent_speak_started_at = 0.0
+        self._agent_current_text = ""  # what the agent is currently/just spoke (for echo detection)
+        self._agent_spoke_until = 0.0  # perf_counter through which echo of the last turn may arrive
         self._barge_ins = 0
         self._errors: list[str] = []
         self._latencies: list[LatencySample] = []
@@ -181,6 +194,11 @@ class CallSession:
                 elif ev.type == STTEventType.FINAL:
                     self._user_speaking = True
                     if ev.text.strip():
+                        # Drop transcripts that are the agent's own audio echoed back, so echo does
+                        # not become a contact turn (which tangles the conversation).
+                        if self._looks_like_echo(ev.text):
+                            self._log("echo_suppressed", text=ev.text.strip())
+                            continue
                         # Accumulate finalized segments so the turn can be assembled even when the
                         # end-of-turn signal (UtteranceEnd) carries no text of its own.
                         self._utterance_parts.append(ev.text.strip())
@@ -192,7 +210,10 @@ class CallSession:
                     # is empty, the noisy-telephony fallback). Using the accumulated transcript
                     # handles both, so a turn is never stalled to the silence timeout. An endpoint
                     # with no accumulated text is genuine noise/echo: ignore it.
-                    turn_text = " ".join(self._utterance_parts).strip() or ev.text.strip()
+                    endpoint_text = ev.text.strip()
+                    if endpoint_text and self._looks_like_echo(endpoint_text):
+                        endpoint_text = ""
+                    turn_text = " ".join(self._utterance_parts).strip() or endpoint_text
                     self._utterance_parts = []
                     if turn_text:
                         self._log("endpoint", text=turn_text)
@@ -205,6 +226,26 @@ class CallSession:
             self._errors.append(f"listen: {exc!r}")
             self._log("listen_error", error=repr(exc))
 
+    def _looks_like_echo(self, text: str) -> bool:
+        """True when `text` is very likely the agent's own audio transcribed back, not the contact.
+
+        Only applies while the agent is speaking or within the echo tail after it. Requires a
+        multi-word transcript that mostly overlaps the agent's own words, so short genuine
+        replies ("yes", "Saturday") are never misread as echo even if they share a word."""
+
+        if not (self._agent_speaking or time.perf_counter() < self._agent_spoke_until):
+            return False
+        words = [w for w in _WORD_RE.findall(text.lower()) if w]
+        # Only long, highly-overlapping transcripts are treated as echo, so short genuine replies
+        # (even ones that repeat a word the agent said, like "Saturday at ten works") are trusted.
+        if len(words) < 4:
+            return False
+        agent_words = set(_WORD_RE.findall(self._agent_current_text.lower()))
+        if not agent_words:
+            return False
+        overlap = sum(1 for w in words if w in agent_words) / len(words)
+        return overlap >= 0.8
+
     def _maybe_barge_in(self, text: str) -> None:
         """Cancel the agent's in-flight utterance only when the contact is genuinely interrupting:
         real transcribed words (not a bare VAD blip), past the echo-guard window, and barge-in
@@ -212,6 +253,8 @@ class CallSession:
 
         if not (self.barge_in_enabled and self._agent_speaking):
             return
+        if self._barge_in_fired:
+            return  # latched: one utterance interrupts the current turn at most once (no storm)
         if self._barge_in_locked:
             self._log("barge_in_suppressed", reason="locked", text=text)
             return
@@ -220,6 +263,10 @@ class CallSession:
         if (time.perf_counter() - self._agent_speak_started_at) < self.echo_guard_seconds:
             self._log("barge_in_suppressed", reason="echo_guard", text=text)
             return
+        if self._looks_like_echo(text):
+            self._log("barge_in_suppressed", reason="echo_text", text=text)
+            return
+        self._barge_in_fired = True
         self._barge_ins += 1
         self._log("barge_in", text=text)
         # Schedule the cancel without blocking the listener loop.
@@ -304,10 +351,12 @@ class CallSession:
     ) -> None:
         self._agent_speaking = True
         self._barge_in_locked = not interruptible
+        self._barge_in_fired = False  # fresh latch for this turn
+        self._agent_current_text = ""  # capture what we speak, for echo detection
         self._agent_speak_started_at = time.perf_counter()
         self._log("agent_speak_start", state=reply.state.value, interruptible=interruptible)
         try:
-            utt = await self.pipeline.say(reply.text_stream)
+            utt = await self.pipeline.say(self._capture_agent_text(reply.text_stream))
             await utt.wait()
             first_audio_at = getattr(utt, "first_audio_at", None)
             first_text_at = getattr(utt, "first_text_at", None)
@@ -344,7 +393,17 @@ class CallSession:
         finally:
             self._agent_speaking = False
             self._barge_in_locked = False
+            # Echo of what we just said can keep arriving from the carrier for a short tail.
+            self._agent_spoke_until = time.perf_counter() + self.echo_tail_seconds
             self._log("agent_speak_end")
+
+    async def _capture_agent_text(self, stream):
+        """Pass the agent's text stream through unchanged while accumulating it, so echo detection
+        can compare incoming transcripts against what the agent is actually saying."""
+
+        async for delta in stream:
+            self._agent_current_text += delta
+            yield delta
 
     async def _await_playback(self, utt: object, first_audio_at: Optional[float]) -> None:
         """Sleep until the audio just sent has finished playing, so silence detection does not
