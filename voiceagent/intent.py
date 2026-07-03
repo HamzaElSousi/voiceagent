@@ -17,11 +17,21 @@ from .config import ComplianceConfig, ScriptConfig
 from .contracts import LLM, CallState, Intent, IntentResult
 
 
+def _deapostrophe(text: str) -> str:
+    """Drop straight and curly apostrophes so signal matching is robust to STT variance
+    ("let's do it" vs "lets do it", "don't call" vs "dont call")."""
+
+    return text.replace("'", "").replace("’", "")
+
+
 def _compile_alternation(spec: str) -> Optional[re.Pattern[str]]:
     """Compile a pipe-delimited signal spec ('yes|sure|okay') into a case-insensitive regex
-    that matches any alternative as a whole word/phrase. Returns None if spec is empty."""
+    that matches any alternative as a whole word/phrase. Returns None if spec is empty.
 
-    parts = [p.strip() for p in spec.split("|") if p.strip()]
+    Apostrophes are stripped from the alternatives so the pattern matches text that the STT may
+    return with or without them; callers match against apostrophe-stripped text too."""
+
+    parts = [_deapostrophe(p.strip()) for p in spec.split("|") if p.strip()]
     if not parts:
         return None
     # Sort longest-first so multi-word phrases win over their prefixes.
@@ -76,16 +86,24 @@ class IntentClassifier:
                 return trig
         return None
 
-    async def classify(self, text: str, state: CallState) -> IntentResult:
-        """Classify a contact turn. Async because of the optional LLM fallback."""
+    async def classify(
+        self, text: str, state: CallState, use_llm_fallback: bool = True
+    ) -> IntentResult:
+        """Classify a contact turn. Async because of the optional LLM fallback.
+
+        Set `use_llm_fallback=False` to stay regex-only (no model call), which callers on the
+        latency-sensitive turn path use so the reply LLM is the only model call per turn.
+        """
 
         stripped = text.strip()
         if not stripped:
             return IntentResult(intent=Intent.SILENCE, source="regex")
+        # Signal regexes are apostrophe-stripped, so match against stripped-apostrophe text too.
+        matchable = _deapostrophe(stripped)
 
         # 1. Opt-out (compliance) always wins.
-        if self._opt_out_re and self._opt_out_re.search(stripped):
-            m = self._opt_out_re.search(stripped)
+        if self._opt_out_re and self._opt_out_re.search(matchable):
+            m = self._opt_out_re.search(matchable)
             return IntentResult(
                 intent=Intent.OPT_OUT,
                 matched_trigger=m.group(0) if m else None,
@@ -93,15 +111,15 @@ class IntentClassifier:
             )
 
         # 2. End signal.
-        if self._end_re and self._end_re.search(stripped):
-            m = self._end_re.search(stripped)
+        if self._end_re and self._end_re.search(matchable):
+            m = self._end_re.search(matchable)
             return IntentResult(
                 intent=Intent.END, matched_trigger=m.group(0) if m else None, source="regex"
             )
 
         # 3. Booking signal.
-        if self._booking_re and self._booking_re.search(stripped):
-            m = self._booking_re.search(stripped)
+        if self._booking_re and self._booking_re.search(matchable):
+            m = self._booking_re.search(matchable)
             return IntentResult(
                 intent=Intent.BOOKING, matched_trigger=m.group(0) if m else None, source="regex"
             )
@@ -112,7 +130,11 @@ class IntentClassifier:
             return IntentResult(intent=Intent.OBJECTION, matched_trigger=trig, source="regex")
 
         # 5. LLM fallback for ambiguous turns during the pitch.
-        if self.llm is not None and state in (CallState.VALUE_PROP, CallState.OBJECTION):
+        if (
+            use_llm_fallback
+            and self.llm is not None
+            and state in (CallState.VALUE_PROP, CallState.OBJECTION)
+        ):
             label = await self._llm_classify(stripped)
             if label is not None:
                 return IntentResult(intent=label, source="llm")

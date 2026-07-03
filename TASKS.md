@@ -87,3 +87,22 @@ Legend: [x] done, [~] in progress, [ ] not started
       Live retest 2026-07-02 (SID CA02e7a1...2380): endpoint->first-audio p50 ~130ms
       (turns: 141ms, 119ms) vs ~892ms before. Outcome booked_meeting, 0 false barge-ins,
       clean end, no socket errors. Perceived ~400ms incl. Deepgram 250ms endpointing.
+
+## Milestone 3 - Conversation quality (LLM-driven core, see ISSUES.md F9-F12 + O8)
+Live call 2026-07-02 (happy path only) exposed: booking hung up mid-question, no room to answer,
+no handling of "who is this / how did you get my number" or real pushback. Decision: rebuild the
+conversation core as LLM-driven + deterministic guardrails (compliance + booking). Booking logs
+intent only for now; cal.com booking is a future goal (PRD.md).
+- [x] M3-1 Rewrite engine.py: LLM drives every turn (system prompt = persona + goal + core pitch +
+      honest identity/source answers + objection hints); guards = opt-out, goodbye, silence, booking
+- [x] M3-2 Fix premature/false booking: gate on _meeting_offered; graceful close, no dropped question
+- [x] M3-3 Remove 2-objection hard limit (LLM handles pushback); soft "not interested" no longer ends
+- [x] M3-4 Robust signals: apostrophe-insensitive matching, broadened booking phrases,
+      opt-out contractions (don't call); regex-only guard path (use_llm_fallback=False) for low latency
+- [x] M3-5 Update tests (test_engine rewritten for LLM-driven contract; test_session booking offer-gated)
+- [x] M3-6 Interruptible-after-disclosure greeting: engine.opening() splits disclosure (played
+      non-interruptibly for compliance) from the greeting (interruptible so the contact can jump in);
+      session plays them as two segments. Decision from user 2026-07-02.
+- [ ] M3-7 User runs pytest; then adversarial FREESTYLE live retest (O8): user improvises hard cases
+      (argue, "who is this / how'd you get my number", soft-no, opt-out mid-call, silence, booking).
+      Restart server first (running old code). Read events log + transcript, tune. GATED on user "go".

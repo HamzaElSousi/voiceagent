@@ -195,9 +195,13 @@ class CallSession:
     # -- conversation loop -------------------------------------------------------------------
 
     async def _converse(self) -> tuple[Outcome, str]:
-        # Opening turn: the greeting carries the AI disclosure, so play it in full (compliance)
-        # and do not let an early "hello"/"yeah" or echo cut it off.
-        await self._speak_reply(self.engine.open(), interruptible=False)
+        # Opening turn: the AI disclosure must be heard in full (compliance), so play it
+        # non-interruptibly; then the greeting is interruptible so the contact can jump in
+        # naturally instead of waiting out the whole opener.
+        disclosure, greeting = self.engine.opening()
+        if disclosure is not None:
+            await self._speak_reply(disclosure, interruptible=False)
+        await self._speak_reply(greeting, interruptible=True)
 
         silences = 0
         turns = 0

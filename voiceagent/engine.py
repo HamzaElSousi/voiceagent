@@ -1,18 +1,29 @@
-"""ConversationEngine: the state machine and the brain of a call.
+"""ConversationEngine: the brain of a call. LLM-driven with deterministic guardrails.
 
-Implements the PRD state machine (DIALING -> GREETING -> VALUE_PROP -> OBJECTION / BOOKING ->
-END) over (state, intent). It decides WHAT the agent says; the pipeline handles HOW (STT/TTS).
-Script lines come straight from agent.yaml; free-form turns stream from the LLM so audio can
-start on sentence 1 while the model is still writing sentence 2.
+The LLM drives every conversational turn, grounded in the persona, the core pitch, the objection
+hints, and the compliance disclosure from agent.yaml. It can therefore handle real human calls:
+questions ("who is this?", "how did you get my number?", "is this an AI?"), pushback, and off-script
+turns, not just a scripted happy path.
 
-The engine is driven turn by turn by the CallSession and is deterministic given a fake LLM and
-fake intent inputs, so the whole state machine is testable with zero network.
+Deterministic code only owns the guardrails that must be reliable:
+  - opt-out / do-not-call  -> comply, suppress, end (compliance hard stop)
+  - explicit end / goodbye -> end politely
+  - booking agreement      -> log the booked_meeting outcome + a graceful close, then end
+    (only once the agent has actually offered the meeting, so an early "sure" is not a booking)
+
+Booking currently only LOGS the intent (outcome + transcript). Giving the agent a real cal.com
+booking is a planned future integration (see PRD.md "Future work"); the graceful close is written to
+promise a follow-up rather than to claim a specific slot was reserved.
+
+The engine keeps the same public surface the CallSession drives (open / handle / voicemail /
+.state / .transcript / AgentReply) and stays testable with a FakeLLM, zero network.
 """
 
 from __future__ import annotations
 
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from .compliance import ComplianceGate
@@ -44,9 +55,19 @@ class AgentReply:
 # Short, safe static lines for terminal moments. Kept in code (not the LLM) so they are reliable.
 _OPT_OUT_LINE = "Understood, I'll take you off our list. Sorry to bother you, and take care."
 _END_LINE = "No problem at all. Thanks for your time, have a great day."
-_OBJECTION_LIMIT_LINE = "I completely understand. I'll leave it there. Thanks for your time."
 _SILENCE_LINE = "Sorry, I may have lost you there. Are you still on the line?"
-_FALLBACK_LINE = "I'll have someone follow up with you. Thanks for your time."
+_BOOKING_CLOSE_LINE = (
+    "Perfect, I'll get that set up and send over the details. "
+    "Thanks so much for your time, talk soon!"
+)
+
+# Words in an agent turn that mean the meeting has actually been put on the table. Only after this
+# does a contact "yes/sure" count as a booking (fixes the early-agreement false booking).
+_MEETING_OFFER_RE = re.compile(
+    r"\b(demo|meeting|15[- ]?minute|fifteen[- ]?minute|calendar|schedule|book(?:ing)?|"
+    r"quick call|hop on a call|set (?:it|something) up|find a time)\b",
+    re.IGNORECASE,
+)
 
 
 class ConversationEngine:
@@ -67,8 +88,9 @@ class ConversationEngine:
         self.cost_meter = cost_meter
 
         self.state: CallState = CallState.DIALING
-        self.objection_count = 0
         self.transcript: list[TurnRecord] = []
+        self._meeting_offered = False
+        self._system_cache: Optional[str] = None
 
     # -- template rendering ------------------------------------------------------------------
 
@@ -86,10 +108,16 @@ class ConversationEngine:
     # -- transcript ---------------------------------------------------------------------------
 
     def _record(self, speaker: str, text: str) -> None:
-        if text.strip():
-            self.transcript.append(
-                TurnRecord(speaker=speaker, text=text.strip(), state=self.state, at=time.perf_counter())
-            )
+        clean = text.strip()
+        if not clean:
+            return
+        self.transcript.append(
+            TurnRecord(speaker=speaker, text=clean, state=self.state, at=time.perf_counter())
+        )
+        # Track whether the agent has actually offered the meeting yet, so an early contact "sure"
+        # is not mistaken for a booking.
+        if speaker == "agent" and _MEETING_OFFER_RE.search(clean):
+            self._meeting_offered = True
 
     # -- streaming helpers --------------------------------------------------------------------
 
@@ -111,6 +139,8 @@ class ConversationEngine:
     def _static(self, text: str) -> AsyncIterator[str]:
         return self._tracked(self._once(text))
 
+    # -- LLM turn -----------------------------------------------------------------------------
+
     def _llm_messages(self) -> list[dict[str, str]]:
         """Map the transcript to chat messages for a free-form turn."""
 
@@ -124,11 +154,47 @@ class ConversationEngine:
         return messages
 
     def _system_prompt(self) -> str:
-        return (
-            f"{self.config.agent.persona}\n\n"
-            "You are on a live outbound phone call. Keep every reply to at most two short "
-            "sentences. Be natural and conversational. Do not use lists or markdown."
-        )
+        """Build the grounding prompt once per call: persona, goal, core pitch, honesty rules,
+        identity answers, and the configured objection hints."""
+
+        if self._system_cache is not None:
+            return self._system_cache
+
+        cfg = self.config
+        name = self.contact.get("name", "there")
+        pitch = self._render(cfg.script.value_prop)
+        disclosure = getattr(cfg.compliance, "ai_disclosure", "")
+
+        lines = [
+            cfg.agent.persona.strip(),
+            "",
+            f"You are on a live outbound phone call with {name}. You are an AI voice assistant, "
+            "and you have already disclosed that. Speak naturally, like a real person on the phone.",
+            "",
+            "Your goal is to book a 15-minute demo. Weave this core pitch in naturally early on, in "
+            f'your own words, do not read it verbatim: "{pitch}"',
+            "",
+            "Rules:",
+            "- Keep every reply to at most two short, spoken sentences. No lists, no markdown, no "
+            "stage directions or emoji.",
+            "- Be genuinely helpful and never pushy. If they are clearly not interested after you "
+            "have made your case once, thank them warmly and let them go.",
+            "- Answer honestly and briefly. If they ask who you are or if you are an AI, say yes, "
+            "you are an AI assistant calling on their behalf" + (f' ({disclosure})' if disclosure else "")
+            + ". If they ask how you got their number, say they are on a contact list you are "
+            "reaching out to and they can opt out any time.",
+            "- If you do not know something, say you'll have someone follow up.",
+            "- When they agree to the demo, confirm warmly in one short sentence.",
+        ]
+
+        if cfg.script.objections:
+            lines.append("")
+            lines.append("Common objections and good responses (adapt, do not quote):")
+            for o in cfg.script.objections:
+                lines.append(f'- If they say "{o.trigger}": {self._render(o.response)}')
+
+        self._system_cache = "\n".join(lines)
+        return self._system_cache
 
     async def _llm_tracked(self) -> AsyncIterator[str]:
         """Stream a free-form LLM reply, recording the spoken text and metering token usage on
@@ -149,17 +215,39 @@ class ConversationEngine:
                 except Exception:
                     pass
 
-    def _llm_reply(self) -> AsyncIterator[str]:
-        return self._llm_tracked()
+    def _llm_reply(self, state: CallState, intent: Optional[IntentResult]) -> AgentReply:
+        self.state = state
+        return AgentReply(text_stream=self._llm_tracked(), state=state, intent=intent)
 
     # -- conversation entry points ------------------------------------------------------------
 
     def open(self) -> AgentReply:
-        """The agent's opening turn: AI disclosure (if configured) plus the greeting."""
+        """The agent's opening turn as one combined reply (AI disclosure + greeting). Retained for
+        callers/tests that want the whole opener; the live session uses `opening()` to play the
+        disclosure non-interruptibly and let the contact barge in on the greeting."""
 
         self.state = CallState.GREETING
         greeting = self.compliance.apply_disclosure(self._render(self.config.script.greeting))
         return AgentReply(text_stream=self._static(greeting), state=CallState.GREETING)
+
+    def opening(self) -> tuple[Optional[AgentReply], AgentReply]:
+        """Split the opener into (disclosure, greeting). The disclosure (when configured) must be
+        heard in full for compliance, so the session plays it non-interruptibly; the greeting is
+        then interruptible so the contact can jump in naturally. Returns (None, greeting) when no
+        up-front disclosure is configured."""
+
+        self.state = CallState.GREETING
+        disclosure_reply: Optional[AgentReply] = None
+        cc = self.compliance.config
+        if cc.disclose_in_greeting and cc.ai_disclosure:
+            disclosure_reply = AgentReply(
+                text_stream=self._static(cc.ai_disclosure.strip()), state=CallState.GREETING
+            )
+        greeting_reply = AgentReply(
+            text_stream=self._static(self._render(self.config.script.greeting)),
+            state=CallState.GREETING,
+        )
+        return disclosure_reply, greeting_reply
 
     def voicemail(self) -> AgentReply:
         """Answering machine detected: leave a short message and end."""
@@ -175,10 +263,18 @@ class ConversationEngine:
         )
 
     async def handle(self, contact_text: str) -> AgentReply:
-        """Process one contact turn and produce the next agent turn."""
+        """Process one contact turn and produce the next agent turn.
+
+        Guardrails run first (opt-out, end, silence, booking); everything else is an LLM-driven
+        reply grounded in the system prompt.
+        """
 
         self._record("contact", contact_text)
-        result = await self.classifier.classify(contact_text, self.state)
+        # Guard classification is regex-only (no LLM fallback) to keep the turn latency low; the
+        # reply LLM does the conversational heavy lifting.
+        result = await self.classifier.classify(
+            contact_text, self.state, use_llm_fallback=False
+        )
 
         # Compliance hard stop, valid in any state.
         if result.intent == Intent.OPT_OUT:
@@ -195,7 +291,7 @@ class ConversationEngine:
                 intent=result,
             )
 
-        # Explicit end signal, any state.
+        # Explicit end / goodbye, any state.
         if result.intent == Intent.END:
             self.state = CallState.END
             return AgentReply(
@@ -207,44 +303,18 @@ class ConversationEngine:
                 intent=result,
             )
 
-        # Silence in any state: gently reprompt without advancing the state machine.
+        # Silence: gently reprompt without ending or advancing.
         if result.intent == Intent.SILENCE:
             return AgentReply(
                 text_stream=self._static(_SILENCE_LINE), state=self.state, intent=result
             )
 
-        if self.state == CallState.GREETING:
-            return self._enter_value_prop(result)
-
-        if self.state in (CallState.VALUE_PROP, CallState.OBJECTION):
-            return await self._handle_pitch(result)
-
-        # Fallback: anything unexpected, hand off gracefully and end.
-        self.state = CallState.END
-        return AgentReply(
-            text_stream=self._static(_FALLBACK_LINE),
-            state=CallState.END,
-            end_after=True,
-            outcome=Outcome.CALLBACK_REQUESTED,
-            end_reason="unhandled state",
-            intent=result,
-        )
-
-    # -- internal transitions -----------------------------------------------------------------
-
-    def _enter_value_prop(self, result: IntentResult) -> AgentReply:
-        self.state = CallState.VALUE_PROP
-        value_prop = self._render(self.config.script.value_prop)
-        return AgentReply(
-            text_stream=self._static(value_prop), state=CallState.VALUE_PROP, intent=result
-        )
-
-    async def _handle_pitch(self, result: IntentResult) -> AgentReply:
-        if result.intent == Intent.BOOKING:
+        # Booking: only a real booking once the meeting has actually been offered. Log the intent
+        # and close gracefully (no unanswered question, since we hang up here).
+        if result.intent == Intent.BOOKING and self._meeting_offered:
             self.state = CallState.BOOKING
-            line = self._render(self.config.script.booking_response)
             return AgentReply(
-                text_stream=self._static(line),
+                text_stream=self._static(_BOOKING_CLOSE_LINE),
                 state=CallState.BOOKING,
                 end_after=True,
                 outcome=Outcome.BOOKED_MEETING,
@@ -252,33 +322,6 @@ class ConversationEngine:
                 intent=result,
             )
 
-        if result.intent == Intent.OBJECTION:
-            self.objection_count += 1
-            if self.objection_count > self.config.script.max_objections:
-                self.state = CallState.END
-                return AgentReply(
-                    text_stream=self._static(_OBJECTION_LIMIT_LINE),
-                    state=CallState.END,
-                    end_after=True,
-                    outcome=Outcome.NOT_INTERESTED,
-                    end_reason="objection limit reached",
-                    intent=result,
-                )
-            # Handle the objection, then loop back to the pitch.
-            response = (
-                self.classifier.objection_response_for(result.matched_trigger or "")
-                if result.matched_trigger
-                else None
-            )
-            stream = self._static(self._render(response)) if response else self._llm_reply()
-            reply = AgentReply(text_stream=stream, state=CallState.OBJECTION, intent=result)
-            self.state = CallState.VALUE_PROP  # handled: ready for the next turn
-            return reply
-
-        if result.intent == Intent.SILENCE:
-            return AgentReply(
-                text_stream=self._static(_SILENCE_LINE), state=CallState.VALUE_PROP, intent=result
-            )
-
-        # NEUTRAL: free-form continuation of the pitch via the LLM.
-        return AgentReply(text_stream=self._llm_reply(), state=CallState.VALUE_PROP, intent=result)
+        # Everything else: let the LLM carry the conversation (pitch, questions, objections,
+        # curveballs). The engaged phase is tracked as VALUE_PROP for metrics.
+        return self._llm_reply(CallState.VALUE_PROP, result)

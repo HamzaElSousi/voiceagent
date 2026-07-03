@@ -40,10 +40,16 @@ script:
     - trigger: "already have something"
       response: "What are you using? Most teams switch after hitting limitations with their current tool."
 
+  # Objections are hints the LLM adapts, not a hard rail. It handles pushback and questions
+  # naturally; max_objections is retained for config compatibility but no longer ends the call.
   max_objections: 2
-  booking_signal: "yes|sure|okay|sounds good|let's do it"
+  # Booking only counts once the agent has actually offered the meeting (see engine _meeting_offered),
+  # so an early "sure" is not a false booking. Booking currently logs the intent (cal.com is future).
+  booking_signal: "yes|yeah|yep|sure|okay|sounds good|sounds great|let's do it|that works|works for me|let's book|book it|sign me up|i'm in|set it up|let's set|perfect"
   booking_response: "Perfect! I'll send a calendar invite to {contact_email}. Does {suggested_time} work?"
-  end_signal: "goodbye|not interested|remove me"
+  # Only genuine call-enders here. A soft "not interested" is left to the LLM to handle gracefully,
+  # so the agent does not hang up the instant someone hesitates.
+  end_signal: "goodbye|good bye|bye now|i have to go|i've got to go|gotta go|hang up"
 
 outcomes: [booked_meeting, callback_requested, not_interested, voicemail, no_answer]
 
@@ -59,7 +65,7 @@ compliance:
   disclose_in_greeting: true
   recording_consent: "This call may be recorded for quality. Is that okay?"
   require_recording_consent: false
-  opt_out_phrases: ["remove me", "do not call", "take me off", "stop calling"]
+  opt_out_phrases: ["remove me", "do not call", "don't call", "dont call", "take me off", "stop calling", "stop contacting"]
   do_not_call_file: "do_not_call.csv"     # suppressed numbers; checked before dialing
   calling_hours:
     start: "09:00"

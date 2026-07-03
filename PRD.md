@@ -263,3 +263,16 @@ voiceagent/
 - Engineered interruption handling that cancels in-progress TTS and LLM generation when the contact speaks mid-response, maintaining natural conversation flow
 - Reduced cost per call to < $0.07 vs $0.21–$0.45 from SaaS alternatives by assembling the same underlying APIs without a platform markup
 - Designed a YAML-configurable conversation state machine with objection handlers, booking detection, and structured outcome logging deployable with `docker-compose up`
+
+---
+
+## Future work / roadmap
+
+- **Conversation core (Milestone 3, in progress):** move from the scripted state-machine rail to an
+  LLM-driven agent with deterministic guardrails (compliance + booking), so the agent can handle
+  real human calls: questions ("who is this?", "how did you get my number?"), arguments, and
+  off-script turns, not just the happy path. See `ISSUES.md` O5-O8.
+- **Booking -> cal.com integration (planned):** today a confirmed meeting only logs the
+  `booked_meeting` intent + transcript. The goal is to give the agent access to the user's
+  **cal.com** account so it books a real slot (and sends the invite) live during the call. Kept as
+  a deferred integration until the conversation core is solid.

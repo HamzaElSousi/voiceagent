@@ -67,7 +67,15 @@ def test_voice(
         settings,
         contact,
         media,
-        llm=FakeLLM(["Sure, happy to explain a bit more."]),
+        # First reply offers the demo, so a later "let's do it" is a real booking (booking is
+        # gated on the meeting actually being offered). Mirrors how the live LLM drives the pitch.
+        llm=FakeLLM(
+            [
+                "I'm Alex with Acme, we help teams cut project delays. "
+                "Would you be open to a quick 15-minute demo this week?",
+                "Great, I'll get that set up.",
+            ]
+        ),
         # No SPEECH_START in the mock: the contact listens to the greeting before replying, so
         # the demo shows a clean back-and-forth. Barge-in is exercised in the test suite.
         stt=FakeSTT.from_turns(turns, include_speech_start=False),

@@ -14,12 +14,52 @@ as a model-agnostic alternative behind the LLM interface.
 
 ---
 
-## Open
+## Open (Milestone 3: conversation quality)
 
-None. All Milestone 2 issues resolved and validated live (see Fixed F5-F8). Next possible work if
-lag resurfaces: trim `endpointing_ms` below 250 to shave the ~250ms Deepgram VAD window off perceived
-latency (trade: occasional early cut-in), or pivot to a single-socket realtime API (OpenAI Realtime)
-if a further step-change is needed (leaves Claude; see G4).
+Latency is fixed (M2). The live call surfaced that the *conversation design* was the real problem:
+the old engine was a rigid scripted rail that advanced on turn count. Decision (2026-07-02): rebuild
+the conversation core as **LLM-driven + guardrails** (the LLM drives every turn; code owns only
+compliance + booking guards). Done in code + tests (see F9-F12). Booking currently only LOGS the
+intent; live cal.com booking is a future goal (PRD.md). Remaining open item is live validation:
+
+### O8. Adversarial paths not yet validated live
+The rebuilt core is verified offline (fakes), but on a real call only the happy path has ever been
+exercised. Need live runs that argue, ask "who is this / how did you get my number / are you an AI",
+give a soft "not interested", opt out mid-call, go silent, and confirm a booking, then read
+`call_logs/events/<sid>.jsonl` and tune. Until then, treat conversation quality as unproven live.
+
+---
+
+## Fixed
+
+### F12. No handling for legitimacy challenges or real pushback (was O7)
+"Who is this?", "How did you get my number?", "Is this a robot?", and genuine arguments used to fall
+to a generic pitch-continuation. Fixed by the LLM-driven core: the system prompt (`engine.py`
+`_system_prompt`) grounds the model in persona, goal, the honest identity/source answers, and the
+agent.yaml objection hints, so it answers these naturally. The old 2-objection hard limit that made
+the agent give up was removed (objections no longer end the call). Tests in `tests/test_engine.py`
+(`test_legitimacy_question_is_answered_not_ended`, `test_objections_do_not_end_the_call`).
+
+### F11. Agent ignored its own questions; turn machine advanced on count (was O6)
+The old machine advanced GREETING -> VALUE_PROP on the first contact turn regardless of content, so
+answers (e.g. the name) were never used and there was "no way to respond." Fixed: after the greeting
+every turn is an LLM reply over the full transcript, so the agent actually responds to what was said.
+
+### F10. Booking hung up mid-question / fired too early (was O5)
+Two bugs: (a) the BOOKING branch set `end_after=True` while `booking_response` asked an unanswered
+question, so agreeing dropped the call; (b) any early "sure" counted as a booking. Fixed: booking is
+gated on `engine._meeting_offered` (true only once an agent turn actually offered the demo, via
+`_MEETING_OFFER_RE`), and the close line (`_BOOKING_CLOSE_LINE`) promises follow-up without asking a
+question. An early "sure" now continues the conversation. Tests: `test_early_agreement_is_not_a_booking`,
+`test_booking_only_after_meeting_offered_then_logs_and_ends`.
+
+### F9. Signal matching brittle to STT variance + missing opt-out contractions
+Booking/end/opt-out matching required exact apostrophes and phrasing ("let's do it" missed "lets do
+it"; "do not call" missed "don't call"). Fixed: `intent.py` strips apostrophes from both the
+configured signals and the incoming text (`_deapostrophe`), booking phrases broadened, and
+`don't call` / `dont call` / `stop contacting` added to opt-out phrases (compliance hard stop).
+A soft "not interested" was also removed from `end_signal` so it no longer instantly hangs up; the
+LLM handles it. Because booking is offer-gated, the broadened affirmatives cannot cause false bookings.
 
 ---
 
