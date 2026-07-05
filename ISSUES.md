@@ -16,11 +16,54 @@ as a model-agnostic alternative behind the LLM interface.
 
 ## Open (Milestone 3: conversation quality)
 
-Latency is fixed (M2). The live call surfaced that the *conversation design* was the real problem:
-the old engine was a rigid scripted rail that advanced on turn count. Decision (2026-07-02): rebuild
-the conversation core as **LLM-driven + guardrails** (the LLM drives every turn; code owns only
-compliance + booking guards). Done in code + tests (see F9-F12). Booking currently only LOGS the
-intent; live cal.com booking is a future goal (PRD.md). Remaining open item is live validation:
+Status 2026-07-04: after the F16 event-loop fix, a live freestyle call (SID CA9b848c) FINALLY held a
+real back-and-forth: instant greeting (first audio 0.24s), answered "who is this", "how did you get
+my number" (x2), "what do you guys do", an opt-out question, ~0.8-1.1s per turn, and booked. The core
+works. Remaining items are polish surfaced by that call plus Fable's deferred recommendations.
+
+### O12. False booking on "yes ..." (booking regex too eager)
+Live: the contact said "Yes. Tell me more." and the agent BOOKED and hung up, because the booking
+signal regex matches the bare "yes" and `_meeting_offered` was already true. "Yes, tell me more" is a
+request for more info, not consent to book. Fix: booking should require the "yes" to actually be
+agreement to the meeting, not merely contain an affirmative word followed by a question / "tell me
+more" / another request. Tighten the booking guard (e.g. reject when the turn also contains a
+question or an info-request phrase), and/or let the LLM confirm booking intent.
+
+### O13. "Your voice is cutting off" (audio choppiness under barge-in)
+The contact said this mid-call (t=18.9s). Lines up with frequent barge-ins cancelling audio
+mid-sentence and restarting, plus one TTS latency spike (t=36.8: token_to_audio 3617ms). Need to
+determine whether choppiness is only during interruptions or also on uninterrupted speech (asked the
+user). Candidate fixes: Twilio `mark`-based playback tracking (O15), gentler barge-in, smoothing.
+
+### O11. Booking closes before the contact finishes giving the time
+Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
+"Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
+booking must capture the actual time/slot before closing. Tracked with the cal.com future goal.
+
+### O8. Adversarial paths - PARTIALLY validated (2026-07-04)
+Live call CA9b848c exercised: interrupting, "who is this", "how did you get my number", an opt-out
+QUESTION, info requests, booking. Still not exercised live: a hard opt-out COMMAND ("remove me" /
+"don't call") mid-call, a soft "not interested", and a genuine silence/hangup. Keep testing.
+
+## Fable's deferred recommendations (from the 2026-07-04 architecture review)
+Captured so we implement them deliberately, not rediscover them. Done ones are in Fixed (F16).
+- **Move the repo off `/mnt/c` to WSL-native ext4 (`~/`).** Root cause of the slow imports/I-O that
+  caused F16; fixes a whole class of loop-stall risk. (Not done; needs user buy-in, changes paths.)
+- **O14. Deepgram auto-reconnect + loud failure.** Make `DeepgramSTT` detect an unexpected socket
+  close and reconnect (or emit a distinct error event) instead of the session inferring deafness
+  from a silent stream-end. Partly done: `session.py` now logs `stt_stream_ended` + ERROR-exits
+  after a real exchange (F16), but there is no reconnect yet.
+- **O15. Use Twilio `mark` events for exact playback-done.** `twilio.py` already sends/receives
+  `mark`; `_await_playback` still uses computed duration + a 0.4s margin. Switching to `mark` gives
+  precise end-of-playback and likely helps O13 choppiness and silence timing.
+- **O16. Shorten the greeting** to one sentence + a question (less to sit through, faster to the
+  contact's first turn). Greeting text is in `examples/agent.yaml`.
+- Endpointing (`endpointing_ms` 250 / `utterance_end_ms` 1000) is fine; Fable said do not tune it
+  until the loop stall was fixed. Now fixed, so it can be revisited if turns feel too eager/slow.
+- Greeting-audio caching: only the disclosure is truly static (greeting is templated with
+  `{contact_name}`). Lower priority now that F16 made the greeting fast, but if reintroduced, cache
+  key on (voice_id, model, output_format, text) and still populate `_agent_current_text`,
+  `bytes_sent`/`playback_seconds`, and `engine._record("agent", ...)` if bypassing `pipeline.say()`.
 
 ### O11. Booking closes before the contact finishes giving the time
 Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off

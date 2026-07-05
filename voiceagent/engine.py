@@ -69,6 +69,17 @@ _MEETING_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A contact turn that contains an affirmative but ALSO asks for more info / a question is NOT a
+# booking ("Yes, tell me more", "Sure, but what do you do?"). Guards against the false-booking where
+# a bare "yes" inside an info request closed the call. If any of these match, do not book; let the
+# LLM keep talking and book on a cleaner confirmation.
+_INFO_REQUEST_RE = re.compile(
+    r"\?|\b(tell me more|more about|know more|more info(?:rmation)?|what (?:do|does|is|are|kind)|"
+    r"how (?:do|does|did|much|long|many)|why|who (?:are|is)|where|when do|explain|"
+    r"like what|such as|for example|first|before (?:we|i)|hold on|wait)\b",
+    re.IGNORECASE,
+)
+
 
 class ConversationEngine:
     def __init__(
@@ -310,9 +321,14 @@ class ConversationEngine:
                 text_stream=self._static(_SILENCE_LINE), state=self.state, intent=result
             )
 
-        # Booking: only a real booking once the meeting has actually been offered. Log the intent
-        # and close gracefully (no unanswered question, since we hang up here).
-        if result.intent == Intent.BOOKING and self._meeting_offered:
+        # Booking: only a real booking once the meeting has actually been offered AND the contact's
+        # turn is a clean confirmation, not an affirmative wrapped in an info request or question
+        # ("Yes, tell me more" must NOT book). Otherwise let the LLM keep the conversation going.
+        if (
+            result.intent == Intent.BOOKING
+            and self._meeting_offered
+            and not _INFO_REQUEST_RE.search(contact_text)
+        ):
             self.state = CallState.BOOKING
             return AgentReply(
                 text_stream=self._static(_BOOKING_CLOSE_LINE),

@@ -85,6 +85,28 @@ async def test_booking_only_after_meeting_offered_then_logs_and_ends(make_engine
     assert "details" in text.lower() or "talk soon" in text.lower()
 
 
+async def test_affirmative_inside_info_request_does_not_book(make_engine):
+    # "Yes, tell me more" contains an affirmative but is an info request; it must NOT book (the
+    # live-call false-booking bug, ISSUES.md O12). The LLM should keep talking instead.
+    engine, _m, _c = make_engine(
+        llm_responses=[
+            "Open to a quick 15-minute demo this week?",  # offers the meeting
+            "Sure! We help teams cut project delays by 40 percent.",  # answers the info request
+        ]
+    )
+    await drain(engine.open())
+    await drain(await engine.handle("what's this about?"))  # LLM offers the demo
+    assert engine._meeting_offered is True
+    reply = await engine.handle("yes, tell me more")
+    assert reply.outcome is None
+    assert reply.end_after is False
+    assert engine.state == CallState.VALUE_PROP
+    # A clean confirmation on the next turn DOES book.
+    reply2 = await engine.handle("okay yes let's do it")
+    assert reply2.outcome == Outcome.BOOKED_MEETING
+    assert reply2.end_after is True
+
+
 async def test_opt_out_suppresses_and_ends(make_engine):
     engine, _m, compliance = make_engine()
     await drain(engine.open())

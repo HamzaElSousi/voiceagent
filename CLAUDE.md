@@ -41,10 +41,29 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - Never run pytest automatically; give the user the command. No em dashes in docs.
 - Commits only at a good working point; the user asked to commit + push before any architecture pivot.
 
+## Real-time rules (hard-won; do NOT relearn these the hard way)
+The single loop drives audio in/out on tight deadlines. Anything that stalls it for >~200ms breaks
+the call: it dead-airs the agent AND idle-kills the Deepgram socket (its keepalive stops), so the
+call goes deaf for the rest of its life. See `ISSUES.md` F16.
+- NEVER do blocking work on the event loop: no sync imports, sync file/network I/O, or CPU-heavy
+  work inside `async def` on the call path. Wrap unavoidable blocking calls in `asyncio.to_thread`,
+  or do them at startup before accepting calls (`cli.py serve` preloads `anthropic`/`httpx`).
+- **`/mnt/c` (WSL2 9p) is very slow for file I/O**: `import anthropic` alone is ~14s cold there.
+  This is why lazy provider imports must be preloaded/threaded. Best real fix: run from WSL-native
+  ext4 (`~/`), not `/mnt/c`. Measure a suspected loop stall with a heartbeat task (worst gap).
+- Latency numbers only mean something when the LLM is actually on the path. In M2 the "130ms" was a
+  static script line; real LLM-driven turns floor around ~0.8-1.2s (LLM ~0.5s + TTS ~0.4s) + ~250ms
+  endpointing. Do not chase sub-500ms for live LLM turns; it is not physical for this 3-hop chain.
+- Each call builds its own provider clients, so per-call warmups matter: `session._prewarm_llm`
+  warms the LLM behind the greeting. The greeting itself must not depend on a cold path.
+
 ## Current focus
-Milestone 2: fix live-call latency and turn-taking (see `ISSUES.md` Open items O1-O4) while keeping
-the architecture and Claude default. The decision to fix rather than rewrite to a unified realtime
-API is recorded in `ISSUES.md` G4.
+Milestone 3: conversation quality on live calls. The LLM-driven core + guardrails work and a live
+call now holds a real back-and-forth and books (after the F16 event-loop fix). Open polish items in
+`ISSUES.md`: false-booking on "yes ..." (booking regex too eager), "voice cutting off" (barge-in
+choppiness / one TTS spike), plus Fable's deferred recommendations (Twilio `mark`-based playback,
+shorter greeting, Deepgram auto-reconnect). Architecture + Claude default stay; fix-not-rewrite
+decision is `ISSUES.md` G4.
 
 ## Key pointers
 - Known issues and decisions: `ISSUES.md`
