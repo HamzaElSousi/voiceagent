@@ -7,6 +7,7 @@ creating a ClaudeLLM instance offline does not touch the network.
 
 from __future__ import annotations
 
+import asyncio
 from typing import AsyncIterator, Mapping, Sequence
 
 from voiceagent.contracts import TokenUsage
@@ -41,7 +42,12 @@ class ClaudeLLM:
         self._last_usage: TokenUsage = TokenUsage()
 
     def _ensure_client(self):
-        """Return the AsyncAnthropic client, creating it on the first call."""
+        """Return the AsyncAnthropic client, creating it on the first call.
+
+        NOTE: `import anthropic` is a large, synchronous import that can take ~14s off the WSL2
+        /mnt/c filesystem. Call this via `asyncio.to_thread` (see `stream`) so that cost never
+        blocks the event loop mid-call. The server also preloads the SDK at startup.
+        """
         if self._client is None:
             from anthropic import AsyncAnthropic  # deferred import keeps module import clean
 
@@ -59,7 +65,9 @@ class ClaudeLLM:
         CancelledError the exception propagates without being suppressed;
         the async context manager closes the HTTP connection on the way out.
         """
-        client = self._ensure_client()
+        # Build the client off the event loop: the first call triggers `import anthropic`, which
+        # can block for ~14s on WSL2 /mnt/c and would otherwise freeze the whole call.
+        client = await asyncio.to_thread(self._ensure_client)
         final_message = None
         async with client.messages.stream(
             model=self._model,

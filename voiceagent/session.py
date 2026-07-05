@@ -105,6 +105,7 @@ class CallSession:
         self._user_speaking = False
         self._barge_in_locked = False  # set while speaking a non-interruptible turn (the greeting)
         self._barge_in_fired = False   # latched per agent turn so one utterance fires barge-in once
+        self._stt_ended = False        # set if the STT event stream closes mid-call (we go deaf)
         self._agent_speak_started_at = 0.0
         self._agent_current_text = ""  # what the agent is currently/just spoke (for echo detection)
         self._agent_spoke_until = 0.0  # perf_counter through which echo of the last turn may arrive
@@ -220,6 +221,14 @@ class CallSession:
                         await self._turns.put((turn_text, ev.at or time.perf_counter()))
                     else:
                         self._log("endpoint_empty")
+            # The STT event stream ended on its own. In normal operation _listen is cancelled at
+            # call end (handled below), so reaching here means the STT socket closed while the call
+            # was still live (e.g. Deepgram idle-closed after an event-loop stall) and we are now
+            # deaf. Leave a timeline breadcrumb so this is diagnosable instead of silently running
+            # out the clock on "contact went silent". (Not treated as a hard error: a finite test
+            # STT ends this way too; the real fix is preventing the loop stall that kills the socket.)
+            self._stt_ended = True
+            self._log("stt_stream_ended")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -293,6 +302,13 @@ class CallSession:
 
             turn = await self._await_user_turn()
             if turn is None:
+                # A deaf call (STT socket died mid-call) surfaces here as silence. If we have
+                # already had at least one real exchange and then went deaf, end with an honest
+                # reason rather than re-prompting a mic we can no longer read. On the very first
+                # turn we keep the normal no-answer path (a finite/idle stream is indistinguishable
+                # from genuine early silence, and the preload fix prevents the real death anyway).
+                if self._stt_ended and turns > 1:
+                    return Outcome.ERROR, "speech recognition stream ended mid-call"
                 silences += 1
                 self._log("silence", count=silences)
                 if silences > self.max_silences:

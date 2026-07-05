@@ -103,7 +103,23 @@ def serve(
 ) -> None:
     """Run the FastAPI Media Streams server (point Twilio at wss://<public-host>/stream)."""
 
+    import time as _time
+
     import uvicorn
+
+    # Preload heavy provider SDKs BEFORE uvicorn starts accepting calls. On WSL2's /mnt/c (9p)
+    # filesystem `import anthropic` alone costs ~14s of blocking I/O; if that lazy import fires on
+    # the async event loop during the first call it freezes the whole loop for ~14s, which dead-airs
+    # the greeting AND stalls the Deepgram keepalive until its socket idle-times-out (so the agent
+    # then hears nothing for the rest of the call). Paying it here, once, at boot avoids all of that.
+    typer.echo("Preloading provider SDKs (one-time, slow on /mnt/c)...")
+    _t = _time.perf_counter()
+    for _mod in ("anthropic", "httpx", "websockets"):
+        try:
+            __import__(_mod)
+        except Exception as _exc:  # a missing optional provider must not stop the server
+            typer.echo(f"  (skipped {_mod}: {_exc})")
+    typer.echo(f"Preloaded in {_time.perf_counter() - _t:.1f}s. Starting server...")
 
     settings = settings_from_env()
     uvicorn.run(

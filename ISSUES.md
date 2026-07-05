@@ -37,6 +37,22 @@ give a soft "not interested", opt out mid-call, go silent, and confirm a booking
 
 ## Fixed
 
+### F16. Event-loop freeze from a blocking `import anthropic` (root cause of dead-air AND deaf calls)
+Live call CAe9178c: caller heard ~10s silence then a voice, and no user audio was captured all
+call (agent monologued through 3 silences, hung up "contact went silent"). Fable's diagnosis,
+confirmed by `time python -c "import anthropic"` = **14.1s** from `/mnt/c` (WSL2 9p filesystem):
+the lazy `from anthropic import AsyncAnthropic` in `ClaudeLLM._ensure_client`, fired by
+`_prewarm_llm` at t=0.4s, is a synchronous import that **blocked the asyncio event loop for ~14s**.
+That single freeze (a) stalled ElevenLabs frame send -> ~13s dead-air on the greeting, and (b)
+stalled Deepgram's keepalive task so its socket idle-closed (NET-0001) and the call went deaf for
+good (no STT events -> silence -> hangup). Fixes: (1) `cli.py serve` preloads `anthropic`/`httpx`/
+`websockets` before uvicorn accepts calls (pays the cost once at boot); (2) `claude.py` builds the
+client via `asyncio.to_thread(self._ensure_client)` so the import never blocks the loop even if not
+preloaded. Proven: with the import in a thread, worst event-loop stall during it dropped from ~14s
+to 55ms. Also added a `stt_stream_ended` timeline breadcrumb + an honest ERROR exit when the STT
+dies after a real exchange (`session.py`), so a deaf call is diagnosable instead of silent.
+Recommendation (not done): move the repo to WSL-native ext4 (~/) to fix this class of slow I/O.
+
 ### F15. Echo: the agent's own speech transcribed back as a contact turn (was O10)
 Without acoustic echo cancellation, Deepgram transcribes the agent's own audio (during playback and
 a short carrier tail after), which could become a spurious contact turn and tangle the conversation.
