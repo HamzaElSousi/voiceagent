@@ -1,6 +1,12 @@
 # VoiceAgent
 
-AI outbound sales agent that makes real phone calls. Configure the script in YAML, own your cost.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-mocked%20providers%2C%20zero%20network-brightgreen.svg)](#status)
+
+AI outbound sales agent that makes real phone calls — streaming STT → LLM → TTS with barge-in,
+compliance gates (disclosure, opt-out, calling hours), and per-call cost metering. Configure the
+script in YAML, own your cost.
 
 VoiceAgent assembles the same stack the commercial voice platforms use (Twilio Media Streams to
 Deepgram STT to Claude Haiku to ElevenLabs TTS) into a headless tool you run yourself. It dials
@@ -130,11 +136,18 @@ python -m voiceagent.cli dial "+1YOURNUMBER" --name "Your Name"
 
 Keep the first campaign to one contact (you) until the latency and barge-in behave on a real call.
 
-## Measured (filled in after the live run)
+## Benchmarks — pending the first scripted live run
 
-- Speech-to-speech latency p50 / p95: TBD
-- Per-hop breakdown (endpoint to first token, first token to first audio): TBD
-- Cost per 3-minute call: TBD
+Real speech-to-speech numbers require a live call (gated on API keys), so this repo does not
+print invented latency figures. The pipeline is instrumented to capture them on the first run:
+
+| Metric | Target | Status |
+|---|---|---|
+| Speech-to-speech latency p50 / p95 | < 800 ms / < 1500 ms | instrumented, awaiting live run |
+| Per-hop breakdown (endpoint→first token, first token→first audio) | — | instrumented, awaiting live run |
+| Cost per 3-minute call | < $0.15 | cost meter built, awaiting live run |
+
+The scripted benchmark run is item #1 in [V2_SUGGESTIONS.md](V2_SUGGESTIONS.md).
 
 ## Repo layout
 
