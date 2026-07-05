@@ -31,6 +31,11 @@ class _Utterance:
         self.first_audio_at: Optional[float] = None  # first audio frame sent (TTS first byte out)
         self.spoken_chars = 0
         self.bytes_sent = 0  # total mu-law bytes sent to the contact for this utterance
+        # Audio-smoothness diagnostics (why a call may sound choppy / "cutting off"):
+        self._last_send_at: Optional[float] = None
+        self.max_gap_ms = 0.0     # largest wall-clock gap between consecutive audio frames sent
+        self.max_behind_ms = 0.0  # worst the sent-audio duration fell behind real-time playback
+                                  # (positive => Twilio's buffer likely underran => choppy audio)
 
     @property
     def cancelled(self) -> bool:
@@ -139,9 +144,21 @@ class AssembledPipeline:
         async for audio in self.tts.synthesize(sentence):
             if utt.cancelled:
                 return
+            now = time.perf_counter()
             if utt.first_audio_at is None:
-                utt.first_audio_at = time.perf_counter()
+                utt.first_audio_at = now
+            else:
+                gap_ms = (now - (utt._last_send_at or now)) * 1000.0
+                if gap_ms > utt.max_gap_ms:
+                    utt.max_gap_ms = gap_ms
+            utt._last_send_at = now
             utt.bytes_sent += len(audio)
+            # Underrun check: has the audio we have sent so far fallen behind the wall-clock time
+            # since the first frame? If so, Twilio's playback buffer drained and the contact hears
+            # a gap. Positive max_behind_ms is the smoking gun for choppy / cutting-out audio.
+            behind_ms = ((now - utt.first_audio_at) - (utt.bytes_sent / 8000.0)) * 1000.0
+            if behind_ms > utt.max_behind_ms:
+                utt.max_behind_ms = behind_ms
             await self.media.send_audio(audio)
 
     async def barge_in(self) -> None:

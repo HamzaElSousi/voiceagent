@@ -397,6 +397,11 @@ class CallSession:
                 bytes=getattr(utt, "bytes_sent", 0),
                 playback_s=round(getattr(utt, "playback_seconds", 0.0), 2),
                 cancelled=getattr(utt, "cancelled", False),
+                # Audio-smoothness diagnostics (O13 "voice cutting off"): a large max_behind_ms
+                # means the TTS fell behind real-time and Twilio underran (choppy). A large
+                # max_gap_ms with small max_behind_ms is a burst-then-pause the buffer absorbed.
+                max_gap_ms=round(getattr(utt, "max_gap_ms", 0.0), 1),
+                max_behind_ms=round(getattr(utt, "max_behind_ms", 0.0), 1),
             )
             # utt.wait() returns when audio is SENT to the carrier, but the carrier PLAYS it to
             # the contact over several seconds. Wait for that playback to finish before the loop
