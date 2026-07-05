@@ -468,6 +468,15 @@ class CallSession:
             logger.warning("could not write events file: %r", exc)
 
     def _build_result(self, outcome: Outcome, reason: str) -> CallResult:
+        # Booking is a two-beat close (confirm, then goodbye). If the contact agreed but the call
+        # then dropped before the goodbye (hangup, budget cap, deaf STT), still record the booking:
+        # they consented. Opt-out (compliance) always wins over this.
+        if (
+            getattr(self.engine, "_booking_confirmed", False)
+            and outcome not in (Outcome.BOOKED_MEETING, Outcome.OPTED_OUT)
+        ):
+            outcome, reason = Outcome.BOOKED_MEETING, "booking confirmed"
+
         duration = max(0.0, time.perf_counter() - self._started_at)
         # Approximate the two time-based meters from the call duration. The real Deepgram client
         # exposes precise audio_seconds; prefer it when available.

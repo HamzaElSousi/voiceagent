@@ -43,6 +43,15 @@ long replies burned it faster). Shorter replies cut cost AND the monologue feel.
 near the floor for this chain; the next lever if it still feels gappy is Twilio `mark` timing (O15)
 or a brief acknowledgement token. Re-test to confirm the feel.
 
+### F17. Booking hung up the instant the contact agreed (fixed 2026-07-05)
+User feedback after a great call: "as soon as the appointment was booked, hung up on me." The
+booking guard returned `end_after=True` immediately. Fixed with a two-beat close in `engine.py`:
+beat 1 confirms warmly and invites a last word ("Anything else before I let you go?") WITHOUT
+hanging up (`_booking_confirmed=True`, `end_after=False`); beat 2 (their next turn or a silence)
+delivers `_BOOKING_GOODBYE_LINE` and ends with `BOOKED_MEETING`. `session._build_result` has a safety
+net: if the call drops between beats (hangup/budget/deaf STT), the booking is still recorded (opt-out
+still wins). Tests updated for the two-beat flow. Separate from O11 (capturing the real time = cal.com).
+
 ### O11. Booking closes before the contact finishes giving the time
 Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
 "Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
@@ -72,17 +81,6 @@ Captured so we implement them deliberately, not rediscover them. Done ones are i
   `{contact_name}`). Lower priority now that F16 made the greeting fast, but if reintroduced, cache
   key on (voice_id, model, output_format, text) and still populate `_agent_current_text`,
   `bytes_sent`/`playback_seconds`, and `engine._record("agent", ...)` if bypassing `pipeline.say()`.
-
-### O11. Booking closes before the contact finishes giving the time
-Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
-"Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
-booking must capture the actual time/slot before closing. Tracked with the cal.com future goal.
-
-### O8. Adversarial paths not yet validated live
-The rebuilt core is verified offline (fakes), but on a real call only the happy path has ever been
-exercised. Need live runs that argue, ask "who is this / how did you get my number / are you an AI",
-give a soft "not interested", opt out mid-call, go silent, and confirm a booking, then read
-`call_logs/events/<sid>.jsonl` and tune. Until then, treat conversation quality as unproven live.
 
 ---
 

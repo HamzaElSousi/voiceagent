@@ -17,18 +17,19 @@ from tests.fakes import SILENCE_FRAME, FakeLLM, FakeMediaStream, FakeSTT, FakeTT
 
 
 async def test_full_call_books_meeting(make_session):
-    # The agent (LLM) offers the demo on turn 1, so the turn-2 agreement is a real booking. The
-    # meeting-offer gate means an agreement is only a booking once the meeting is on the table.
+    # The agent (LLM) offers the demo on turn 1, so the turn-2 agreement is a real booking. Booking
+    # is a two-beat close: turn 2 confirms (no hangup), turn 3 gets the goodbye + booked outcome.
     session, _engine, tts, media, _meter = make_session(
-        turns=["yeah sure who is this", "okay sounds good lets do it"],
+        turns=["yeah sure who is this", "okay sounds good lets do it", "no that's all thanks"],
         llm_responses=["I'm Alex with Acme. Would you be open to a quick 15-minute demo this week?"],
     )
     result = await session.run()
     assert result.outcome == Outcome.BOOKED_MEETING
     assert result.end_reason == "booking confirmed"
-    # Greeting (with disclosure), the LLM's demo offer, and the booking close were all synthesized.
+    # Greeting (with disclosure), the LLM's demo offer, and the booking confirm were all synthesized.
     assert any("AI assistant" in s for s in tts.spoken)
     assert any("15-minute demo" in s for s in tts.spoken)
+    assert any("anything else" in s.lower() for s in tts.spoken)  # the two-beat confirm
     assert len(media.outbound) > 0
     assert result.cost.total_usd > 0
     assert result.error is None

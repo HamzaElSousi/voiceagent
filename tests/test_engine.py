@@ -68,21 +68,31 @@ async def test_early_agreement_is_not_a_booking(make_engine):
     assert engine.state == CallState.VALUE_PROP
 
 
-async def test_booking_only_after_meeting_offered_then_logs_and_ends(make_engine):
-    # Once the agent has actually offered the demo, agreement books the meeting and closes cleanly.
+async def test_booking_only_after_meeting_offered_then_two_beat_close(make_engine):
+    # Once the agent has actually offered the demo, agreement CONFIRMS (beat 1) without hanging up,
+    # then the contact's next turn gets a warm goodbye + end (beat 2). This fixes the abrupt hangup.
     engine, _m, _c = make_engine(
         llm_responses=["Would you be open to a quick 15-minute demo this week?"]
     )
     await drain(engine.open())
     await drain(await engine.handle("okay, what's this about?"))  # LLM offers the demo
     assert engine._meeting_offered is True
-    reply = await engine.handle("yeah okay, let's do it")
-    assert reply.outcome == Outcome.BOOKED_MEETING
-    assert reply.end_after is True
-    assert engine.state == CallState.BOOKING
-    text = await drain(reply)
-    # Graceful close that promises follow-up (no unanswered question, since we hang up).
-    assert "details" in text.lower() or "talk soon" in text.lower()
+
+    # Beat 1: agreement confirms but does NOT hang up (gives the contact a last word).
+    beat1 = await engine.handle("yeah okay, let's do it")
+    assert engine._booking_confirmed is True
+    assert beat1.end_after is False
+    assert beat1.outcome is None
+    text1 = await drain(beat1)
+    assert "anything else" in text1.lower()
+
+    # Beat 2: their next turn (or a silence) closes warmly with the booking outcome.
+    beat2 = await engine.handle("no, that's all, thanks")
+    assert beat2.outcome == Outcome.BOOKED_MEETING
+    assert beat2.end_after is True
+    assert engine.state == CallState.END
+    text2 = await drain(beat2)
+    assert "take care" in text2.lower() or "thanks" in text2.lower()
 
 
 async def test_affirmative_inside_info_request_does_not_book(make_engine):
@@ -101,10 +111,11 @@ async def test_affirmative_inside_info_request_does_not_book(make_engine):
     assert reply.outcome is None
     assert reply.end_after is False
     assert engine.state == CallState.VALUE_PROP
-    # A clean confirmation on the next turn DOES book.
+    assert engine._booking_confirmed is False  # still not booked
+    # A clean confirmation on the next turn DOES book (beat 1: confirm, no hangup yet).
     reply2 = await engine.handle("okay yes let's do it")
-    assert reply2.outcome == Outcome.BOOKED_MEETING
-    assert reply2.end_after is True
+    assert reply2.end_after is False
+    assert engine._booking_confirmed is True
 
 
 async def test_opt_out_suppresses_and_ends(make_engine):

@@ -56,10 +56,13 @@ class AgentReply:
 _OPT_OUT_LINE = "Understood, I'll take you off our list. Sorry to bother you, and take care."
 _END_LINE = "No problem at all. Thanks for your time, have a great day."
 _SILENCE_LINE = "Sorry, I may have lost you there. Are you still on the line?"
-_BOOKING_CLOSE_LINE = (
-    "Perfect, I'll get that set up and send over the details. "
-    "Thanks so much for your time, talk soon!"
+# Booking is a two-beat close so the agent does not hang up the instant the contact agrees:
+# first confirm and invite a last word, then say goodbye on their next turn (or a silence).
+_BOOKING_CONFIRM_LINE = (
+    "Perfect, I'll get that set up and send the details over. "
+    "Anything else before I let you go?"
 )
+_BOOKING_GOODBYE_LINE = "Sounds good. Thanks so much for your time, take care!"
 
 # Words in an agent turn that mean the meeting has actually been put on the table. Only after this
 # does a contact "yes/sure" count as a booking (fixes the early-agreement false booking).
@@ -101,6 +104,7 @@ class ConversationEngine:
         self.state: CallState = CallState.DIALING
         self.transcript: list[TurnRecord] = []
         self._meeting_offered = False
+        self._booking_confirmed = False  # set once the contact agrees; next turn closes the call
         self._system_cache: Optional[str] = None
 
     # -- template rendering ------------------------------------------------------------------
@@ -304,6 +308,20 @@ class ConversationEngine:
                 intent=result,
             )
 
+        # Booking two-beat close: the previous turn confirmed a booking, so whatever the contact
+        # says now (or a silence) is their last word. Say goodbye and end with the booking outcome,
+        # instead of hanging up the instant they agreed.
+        if self._booking_confirmed:
+            self.state = CallState.END
+            return AgentReply(
+                text_stream=self._static(_BOOKING_GOODBYE_LINE),
+                state=CallState.END,
+                end_after=True,
+                outcome=Outcome.BOOKED_MEETING,
+                end_reason="booking confirmed",
+                intent=result,
+            )
+
         # Explicit end / goodbye, any state.
         if result.intent == Intent.END:
             self.state = CallState.END
@@ -331,12 +349,11 @@ class ConversationEngine:
             and not _INFO_REQUEST_RE.search(contact_text)
         ):
             self.state = CallState.BOOKING
+            self._booking_confirmed = True  # next turn (or a silence) delivers the goodbye + end
             return AgentReply(
-                text_stream=self._static(_BOOKING_CLOSE_LINE),
+                text_stream=self._static(_BOOKING_CONFIRM_LINE),
                 state=CallState.BOOKING,
-                end_after=True,
-                outcome=Outcome.BOOKED_MEETING,
-                end_reason="booking confirmed",
+                end_after=False,  # do not hang up yet; close warmly on their next turn
                 intent=result,
             )
 
