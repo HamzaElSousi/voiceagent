@@ -13,7 +13,7 @@ agent:
 llm:
   provider: claude
   model: claude-haiku-4-5
-  max_tokens: 100          # ~2 short sentences; caps runaway replies that add call latency
+  max_tokens: 80           # backstop for ~1-2 short sentences; the prompt enforces brevity
   temperature: 0.6
 
 # Which audio pipeline drives the call. "assembled" = Deepgram + Claude + ElevenLabs (full
@@ -56,7 +56,7 @@ outcomes: [booked_meeting, callback_requested, not_interested, voicemail, no_ans
 # Hard cost caps. The cost meter tracks all four meters (Deepgram seconds, Claude tokens,
 # ElevenLabs characters, Twilio minutes) and ends a call gracefully before it overspends.
 limits:
-  per_call_usd: 0.15
+  per_call_usd: 0.30       # a full ~3-min conversation fits; caps a runaway call before overspend
   per_campaign_usd: 25.00
 
 # Compliance is on by default. Outbound sales calls carry legal weight (TCPA and similar).

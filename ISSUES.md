@@ -29,11 +29,19 @@ agreement to the meeting, not merely contain an affirmative word followed by a q
 more" / another request. Tighten the booking guard (e.g. reject when the turn also contains a
 question or an info-request phrase), and/or let the LLM confirm booking intent.
 
-### O13. "Your voice is cutting off" (audio choppiness under barge-in)
-The contact said this mid-call (t=18.9s). Lines up with frequent barge-ins cancelling audio
-mid-sentence and restarting, plus one TTS latency spike (t=36.8: token_to_audio 3617ms). Need to
-determine whether choppiness is only during interruptions or also on uninterrupted speech (asked the
-user). Candidate fixes: Twilio `mark`-based playback tracking (O15), gentler barge-in, smoothing.
+### O13. "Your voice is cutting off" - DIAGNOSED (2026-07-04): not audio, it's verbosity + turn gap
+Instrumented call CA8ce90b logged `max_behind_ms` and `max_gap_ms` per turn. Result: **max_behind_ms
+was 0.0 for the entire call** - the TTS never fell behind real-time, so there is NO streaming
+underrun. max_gap_ms stayed small (<=464ms, absorbed by Twilio's buffer). So "cutting off" is NOT an
+audio-quality problem. Real causes: (a) the agent MONOLOGUES - one reply was a 13.3s block - which
+invites the contact to talk over it, so every interruption chops it; (b) a ~1-1.5s gap between the
+contact finishing and the agent starting (endpointing + LLM + TTS floor) reads as dead air, so the
+contact said "you still there?" which then cancelled the agent's just-starting reply. Fixes applied:
+system prompt now demands ONE short sentence (<20 words) then stop (`engine.py`); max_tokens 100->80
+backstop; per_call_usd 0.15->0.30 (the cap cut the test call off at 113s / "budget_exceeded", and
+long replies burned it faster). Shorter replies cut cost AND the monologue feel. Turn-gap latency is
+near the floor for this chain; the next lever if it still feels gappy is Twilio `mark` timing (O15)
+or a brief acknowledgement token. Re-test to confirm the feel.
 
 ### O11. Booking closes before the contact finishes giving the time
 Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off

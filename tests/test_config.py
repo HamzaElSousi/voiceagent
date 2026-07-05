@@ -18,7 +18,7 @@ def test_example_config_loads(cfg):
     assert cfg.pipeline.mode == "assembled"
     assert cfg.endpointing_ms == 250
     assert cfg.utterance_end_ms == 1000
-    assert cfg.limits.per_call_usd == 0.15
+    assert cfg.limits.per_call_usd == 0.30
     assert cfg.limits.per_campaign_usd == 25.0
     assert len(cfg.script.objections) == 3
     assert "remove me" in cfg.compliance.opt_out_phrases
@@ -68,7 +68,7 @@ def test_extra_field_rejected(tmp_path):
 
 def test_max_tokens_not_flagged_as_secret(cfg):
     # Regression: 'max_tokens' contains 'token' but must not trip secret rejection.
-    assert cfg.llm.max_tokens == 100
+    assert cfg.llm.max_tokens == 80
 
 
 def test_settings_missing_for_live_call_lists_all_when_empty(monkeypatch):
