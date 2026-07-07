@@ -83,6 +83,17 @@ _INFO_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A compliance phrase (opt-out / goodbye) can appear inside a QUESTION about the process rather than
+# as a command: "if I opt out, does that mean you'll stop calling me?" matched "stop calling" and
+# wrongly hung up on a live call. When the turn is clearly interrogative/hypothetical, do not treat
+# it as the command; let the LLM answer honestly (it is instructed to offer opt-out). Bare imperative
+# opt-outs ("remove me", "take me off", "stop calling me") are NOT interrogative and still fire.
+_HYPOTHETICAL_RE = re.compile(
+    r"\?|\b(if i|if you|what if|what happens|would (?:i|you|that)|will (?:i|you|that)|"
+    r"do(?:es)? (?:that|this|it) mean|are you (?:gonna|going to)|can i still|is there (?:a|an) (?:way|option))\b",
+    re.IGNORECASE,
+)
+
 
 class ConversationEngine:
     def __init__(
@@ -293,8 +304,11 @@ class ConversationEngine:
             contact_text, self.state, use_llm_fallback=False
         )
 
-        # Compliance hard stop, valid in any state.
-        if result.intent == Intent.OPT_OUT:
+        # Compliance hard stop, valid in any state. A real opt-out command ("remove me", "take me
+        # off", "stop calling me") suppresses and ends. But when the opt-out phrase is inside a
+        # QUESTION about the process ("if I opt out, will you stop calling?"), that is not a command:
+        # let the LLM answer honestly (it is instructed to offer opt-out) instead of hanging up.
+        if result.intent == Intent.OPT_OUT and not _HYPOTHETICAL_RE.search(contact_text):
             phone = self.contact.get("phone", "")
             if phone:
                 self.compliance.suppress(phone, reason="opt_out")
@@ -308,10 +322,13 @@ class ConversationEngine:
                 intent=result,
             )
 
-        # Booking two-beat close: the previous turn confirmed a booking, so whatever the contact
-        # says now (or a silence) is their last word. Say goodbye and end with the booking outcome,
-        # instead of hanging up the instant they agreed.
+        # Booking two-beat close: the previous turn confirmed the booking. If the contact now asks a
+        # last question, answer it (do not hang up on a genuine question); otherwise this is their
+        # last word, so say goodbye and end with the booking outcome. This fixes both the abrupt
+        # hangup on agreement AND cutting off a final "do I need to prepare anything?".
         if self._booking_confirmed:
+            if contact_text.strip() and _INFO_REQUEST_RE.search(contact_text):
+                return self._llm_reply(CallState.BOOKING, result)  # answer, stay ready to close
             self.state = CallState.END
             return AgentReply(
                 text_stream=self._static(_BOOKING_GOODBYE_LINE),
@@ -322,8 +339,8 @@ class ConversationEngine:
                 intent=result,
             )
 
-        # Explicit end / goodbye, any state.
-        if result.intent == Intent.END:
+        # Explicit end / goodbye, any state (but not when it is part of a question, same as opt-out).
+        if result.intent == Intent.END and not _HYPOTHETICAL_RE.search(contact_text):
             self.state = CallState.END
             return AgentReply(
                 text_stream=self._static(_END_LINE),

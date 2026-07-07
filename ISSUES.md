@@ -86,6 +86,29 @@ Captured so we implement them deliberately, not rediscover them. Done ones are i
 
 ## Fixed
 
+### F19. False opt-out / false end on a question (fixed 2026-07-06)
+Live call CA7d9e1c: the contact asked "if I opt out, does that mean you're gonna stop calling me?"
+and the agent HUNG UP (outcome opted_out) because "stop calling" matched an opt-out phrase inside a
+question. Twin of the false-booking bug. Fixed in `engine.py` with `_HYPOTHETICAL_RE`: when an
+opt-out or end phrase appears in an interrogative/hypothetical turn ("if i", "will you", "does that
+mean", "?", etc.), it is treated as a question and answered by the LLM (which is instructed to offer
+opt-out), NOT as a command. Real imperative commands ("remove me", "take me off", "stop calling me")
+are not interrogative and still fire + suppress instantly. Tests:
+test_opt_out_question_is_answered_not_ended (question defers, then a real command opts out).
+
+### F18. Agent spoke too fast + replies too long (fixed 2026-07-06)
+Live calls CA71d20a/CA8ce90b: the contact said "you speak too fast, slow down" TWICE, and replies
+ran 8-11s. Fixes: ElevenLabs `_DEFAULT_VOICE_SETTINGS["speed"]` 1.0 -> 0.9 (calmer phone pace);
+system prompt now demands ONE short sentence (<20 words) then stop; `max_tokens` 80 -> 64 hard cap.
+Instrumentation (`max_gap_ms`/`max_behind_ms`) had already proven this was verbosity/pace, not audio
+underrun (max_behind_ms 0.0 all call).
+
+### F17b. Two-beat booking close now answers a final question (fixed 2026-07-06)
+Extension of F17: after the booking is confirmed, if the contact asks a last question ("do I need to
+prepare anything for the demo?") the agent ANSWERS it (LLM) instead of cutting straight to goodbye; a
+non-question then closes with BOOKED_MEETING. Test:
+test_booking_two_beat_answers_final_question_then_closes.
+
 ### F16. Event-loop freeze from a blocking `import anthropic` (root cause of dead-air AND deaf calls)
 Live call CAe9178c: caller heard ~10s silence then a voice, and no user audio was captured all
 call (agent monologued through 3 silences, hung up "contact went silent"). Fable's diagnosis,

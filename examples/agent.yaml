@@ -13,7 +13,7 @@ agent:
 llm:
   provider: claude
   model: claude-haiku-4-5
-  max_tokens: 80           # backstop for ~1-2 short sentences; the prompt enforces brevity
+  max_tokens: 64           # hard cap ~1-2 short sentences; live callers found longer replies too much
   temperature: 0.6
 
 # Which audio pipeline drives the call. "assembled" = Deepgram + Claude + ElevenLabs (full

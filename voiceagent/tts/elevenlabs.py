@@ -249,11 +249,12 @@ _ELEVENLABS_MULTI_WS_URL = (
     "?model_id={model_id}&output_format={output_format}"
 )
 
-# BOS voice and generation settings.
+# BOS voice and generation settings. speed < 1.0 slows the delivery: live callers reported the
+# agent spoke too fast on the phone, so 0.9 gives a calmer, more natural pace (range 0.7-1.2).
 _DEFAULT_VOICE_SETTINGS = {
     "stability": 0.5,
     "similarity_boost": 0.75,
-    "speed": 1,
+    "speed": 0.9,
 }
 
 # chunk_length_schedule: controls when ElevenLabs auto-generates audio from

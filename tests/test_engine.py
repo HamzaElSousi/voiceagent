@@ -128,6 +128,48 @@ async def test_opt_out_suppresses_and_ends(make_engine):
     assert compliance.is_suppressed("+14155551234")
 
 
+async def test_opt_out_question_is_answered_not_ended(make_engine):
+    # "if I opt out, will you stop calling me?" is a QUESTION about opting out, not a command.
+    # It must NOT hang up or suppress; the LLM answers. Regression for the live false-opt-out.
+    engine, _m, compliance = make_engine(
+        llm_responses=["Yes, you can opt out any time and I'll stop. Want me to take you off now?"]
+    )
+    await drain(engine.open())
+    reply = await engine.handle("well, if I opt out does that mean you're gonna stop calling me?")
+    assert reply.outcome is None
+    assert reply.end_after is False
+    await drain(reply)
+    assert not compliance.is_suppressed("+14155551234")  # not suppressed on a mere question
+    # A real command on the next turn DOES opt out.
+    reply2 = await engine.handle("yeah, take me off your list")
+    assert reply2.outcome == Outcome.OPTED_OUT
+    assert reply2.end_after is True
+
+
+async def test_booking_two_beat_answers_final_question_then_closes(make_engine):
+    # After the booking is confirmed, a final question is ANSWERED (not cut off); a non-question
+    # then closes with the booking outcome. Regression for cutting off "do I need to prepare?".
+    engine, _m, _c = make_engine(
+        llm_responses=[
+            "Would you be open to a quick 15-minute demo this week?",  # offer
+            "Nope, just show up, I'll email the link.",                # answers the final question
+        ]
+    )
+    await drain(engine.open())
+    await drain(await engine.handle("what's this about?"))
+    beat1 = await engine.handle("yeah let's do it")  # confirm
+    assert engine._booking_confirmed is True
+    assert beat1.end_after is False
+    # Final question is answered, call stays open, still booked-pending.
+    q = await engine.handle("do I need to prepare anything for the demo?")
+    assert q.end_after is False
+    assert engine._booking_confirmed is True
+    # A closing remark then ends with the booking outcome.
+    close = await engine.handle("okay, that's all, thanks")
+    assert close.outcome == Outcome.BOOKED_MEETING
+    assert close.end_after is True
+
+
 async def test_explicit_goodbye_ends_call(make_engine):
     engine, _m, _c = make_engine()
     await drain(engine.open())

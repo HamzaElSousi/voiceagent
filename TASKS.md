@@ -109,6 +109,16 @@ intent only for now; cal.com booking is a future goal (PRD.md).
 - [x] M3-8 Barge-in storm fixed (F14): latch barge-in once per agent turn.
 - [x] M3-9 Echo fixed (F15): drop agent-audio transcribed back (overlap vs in-flight text), for both
       turn capture and barge-in; short genuine replies always trusted. Full suite green (152).
-- [ ] M3-10 Next FREESTYLE live retest (O8 still open): verify barge-in storm + echo are gone, plus
-      opt-out mid-call and silence. Restart server (new code) first. GATED on user "go".
-      O11 (booking captures the real time) deferred to the cal.com integration.
+- [x] M3-10 Freestyle live retests confirmed barge-in + echo fixed; books meetings handling
+      adversarial callers. Found + fixed: F16 event-loop freeze (blocking import anthropic -> 13s
+      dead air + deaf calls; preload + to_thread; 14s->55ms), F17 two-beat booking close (no abrupt
+      hangup) + F17b answer a final question, F18 speech speed 0.9 + shorter replies (max_tokens 64),
+      F19 false opt-out/end on a question (_HYPOTHETICAL_RE guard). Suite green (155).
+- [x] M3-11 Open-source release docs: rewrote README (mermaid diagrams, measured latency,
+      architecture decisions ADR-1..5, tags), updated HamzaElSousi profile README (live-validated),
+      appended VoiceAgent resume bullets + 2 LinkedIn posts at the parent-folder root.
+
+## Status: COMPLETE for open-source release (2026-07-06)
+Working, live-validated (books meetings, handles adversarial callers), 155 offline tests green,
+docs shipped. Deferred to a future project/milestone: cal.com live booking (O11), Deepgram
+auto-reconnect (O14), Twilio mark-based playback (O15), and a potential SaaS layer.
