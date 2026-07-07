@@ -77,13 +77,15 @@ network.
 ```mermaid
 sequenceDiagram
     participant C as Contact
-    participant D as Deepgram STT
+    participant T as Twilio
     participant S as CallSession
+    participant D as Deepgram STT
     participant L as LLM (Claude)
     participant E as ElevenLabs TTS
-    participant T as Twilio
 
-    C->>D: speaks
+    C->>T: speaks
+    T->>S: inbound mu-law frames (Media Stream)
+    S->>D: forward audio
     D->>S: transcript + endpoint (turn complete)
     Note over S: drop echo of the agent's own audio;<br/>one barge-in per utterance
     S->>L: transcript so far + system prompt
@@ -93,7 +95,7 @@ sequenceDiagram
     E-->>S: mu-law audio (streamed)
     S->>T: audio frames
     T->>C: agent speaks
-    Note over S,T: if the contact talks over the agent,<br/>cancel LLM + TTS immediately (barge-in)
+    Note over C,S: if the contact talks over the agent,<br/>cancel LLM + TTS immediately (barge-in)
 ```
 
 The conversation core is **LLM-driven with deterministic guardrails**. After a fixed opening
