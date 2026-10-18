@@ -6,8 +6,8 @@ FakeLLM replays scripted agent replies so the whole engine runs with zero networ
 
 from __future__ import annotations
 
-from voiceagent.contracts import CallState, Outcome
 from tests.conftest import drain
+from voiceagent.contracts import CallState, Outcome
 
 
 async def test_greeting_includes_disclosure_and_name(make_engine):

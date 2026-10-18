@@ -8,7 +8,6 @@ transcript, outcome, and per-hop latency without any API keys. The live demo run
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import yaml
@@ -16,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from ..config import AgentConfig, AgentConfigError, load_agent_config, settings_from_env
+from ..config import AgentConfig, settings_from_env
 
 _HERE = Path(__file__).resolve().parent
 _INDEX = _HERE / "templates" / "index.html"

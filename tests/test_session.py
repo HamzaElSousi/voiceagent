@@ -9,11 +9,9 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
-
+from tests.fakes import SILENCE_FRAME, FakeLLM, FakeMediaStream, FakeSTT, FakeTTS
 from voiceagent.contracts import Outcome
 from voiceagent.pipeline.assembled import AssembledPipeline
-from tests.fakes import SILENCE_FRAME, FakeLLM, FakeMediaStream, FakeSTT, FakeTTS
 
 
 async def test_full_call_books_meeting(make_session):

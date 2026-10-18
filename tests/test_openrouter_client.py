@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from voiceagent.contracts import LLM, TokenUsage
 from voiceagent.llm.openrouter import OpenRouterLLM
 

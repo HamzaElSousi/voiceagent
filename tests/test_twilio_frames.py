@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 from voiceagent.telephony.twilio import (
     build_stream_twiml,
     clear_message,
@@ -18,7 +16,6 @@ from voiceagent.telephony.twilio import (
     mark_message,
     parse_start_event,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

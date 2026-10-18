@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from voiceagent.contracts import (
-    CallState,
     CallResult,
+    CallState,
     CostBreakdown,
     LatencySample,
     Outcome,

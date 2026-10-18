@@ -6,6 +6,7 @@ import pathlib
 
 import pytest
 
+from tests.fakes import FakeLLM, FakeMediaStream, FakeSTT, FakeTTS
 from voiceagent.compliance import ComplianceGate
 from voiceagent.config import load_agent_config
 from voiceagent.contracts import CostRates
@@ -14,8 +15,6 @@ from voiceagent.engine import ConversationEngine
 from voiceagent.intent import IntentClassifier
 from voiceagent.pipeline.assembled import AssembledPipeline
 from voiceagent.session import CallSession
-
-from tests.fakes import FakeLLM, FakeMediaStream, FakeSTT, FakeTTS
 
 EXAMPLE_YAML = pathlib.Path(__file__).resolve().parents[1] / "examples" / "agent.yaml"
 

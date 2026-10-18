@@ -9,11 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from voiceagent.telephony.twilio import TwilioTelephony, build_stream_twiml
 from voiceagent.server import _contact_from_params
-
+from voiceagent.telephony.twilio import TwilioTelephony, build_stream_twiml
 
 # ---------------------------------------------------------------------------
 # build_stream_twiml -- XML escaping

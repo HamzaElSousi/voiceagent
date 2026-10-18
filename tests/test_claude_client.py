@@ -11,11 +11,8 @@ three surface points the implementation depends on:
 
 from __future__ import annotations
 
-import pytest
-
 from voiceagent.contracts import TokenUsage
 from voiceagent.llm.claude import ClaudeLLM
-
 
 # ---------------------------------------------------------------------------
 # Scripted fakes

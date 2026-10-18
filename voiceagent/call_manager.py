@@ -18,7 +18,7 @@ import aiofiles
 
 from .compliance import ComplianceGate
 from .config import AgentConfig
-from .contracts import CallResult, Outcome
+from .contracts import CallResult
 from .cost import CampaignBudget
 
 # A call runner places one call and returns its result. Injected for testability.

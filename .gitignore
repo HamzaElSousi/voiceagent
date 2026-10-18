@@ -29,3 +29,18 @@ call_logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime data (real phone numbers never belong in the repo)
+do_not_call.csv
+
+# Private, instance-specific config and notes (never committed)
+/local/
+instances/
+*.local.md
+*.local.yaml
+Caddyfile.local
+pgdata/
+
+# Web dashboard build
+web/node_modules/
+web/dist/

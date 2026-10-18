@@ -6,10 +6,7 @@ SentenceAggregator are exercised in isolation from the ElevenLabs client.
 
 from __future__ import annotations
 
-import pytest
-
 from voiceagent.tts.elevenlabs import SentenceAggregator, split_into_sentences
-
 
 # ---------------------------------------------------------------------------
 # split_into_sentences: basic cases

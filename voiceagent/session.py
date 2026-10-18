@@ -33,7 +33,6 @@ from .contracts import (
     Outcome,
     Pipeline,
     STTEventType,
-    TurnRecord,
 )
 from .engine import AgentReply, ConversationEngine
 

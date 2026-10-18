@@ -5,13 +5,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import EXAMPLE_YAML
 from voiceagent.builder import build_pipeline
 from voiceagent.config import load_agent_config
 from voiceagent.cost import DollarCostMeter
 from voiceagent.pipeline.realtime import RealtimePipeline
 from voiceagent.server import create_app
-
-from tests.conftest import EXAMPLE_YAML
 
 
 @pytest.fixture

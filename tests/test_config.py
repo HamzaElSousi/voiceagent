@@ -8,7 +8,6 @@ from voiceagent.config import (
     AgentConfigError,
     Settings,
     load_agent_config,
-    settings_from_env,
 )
 
 

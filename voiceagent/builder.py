@@ -12,7 +12,7 @@ from typing import Optional
 
 from .compliance import ComplianceGate
 from .config import AgentConfig, Settings
-from .contracts import CostMeter, LLM, MediaStream, Pipeline, STT, TTS
+from .contracts import LLM, STT, TTS, CostMeter, MediaStream, Pipeline
 from .cost import DollarCostMeter
 from .engine import ConversationEngine
 from .intent import IntentClassifier

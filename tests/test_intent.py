@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeLLM
 from voiceagent.contracts import CallState, Intent
 from voiceagent.intent import IntentClassifier
-from tests.fakes import FakeLLM
 
 
 @pytest.fixture
