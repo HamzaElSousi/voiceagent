@@ -23,7 +23,7 @@ python -m pytest -q                      # deterministic, zero network
   calling hours and the outbound consent gate must stay on. PRs that add a way to disable them will
   be closed.
 - **No secrets or real data in the repo.** Keys live in `.env` or the dashboard. Never commit real
-  phone numbers, transcripts or call logs. Use `+1555555xxxx` numbers in examples and tests.
+  phone numbers, transcripts or call logs. Use the reserved fictional range (`+1 212 555 0100` to `0199`) in examples and tests.
 - Keep PRs focused. Add or update tests for behaviour changes, and update docs when you change
   config, CLI flags or the API.
 

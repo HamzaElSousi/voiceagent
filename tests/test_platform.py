@@ -3,40 +3,17 @@ isolation. Runs the real FastAPI app against a throwaway SQLite database (zero n
 
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from voiceagent.app import repo
-from voiceagent.app.crypto import SecretBox, generate_key
-from voiceagent.app.db import Database, set_database
+from voiceagent.app.crypto import SecretBox
+from voiceagent.app.db import Database
 from voiceagent.app.models import Call, Membership, ProviderCredential, User
-from voiceagent.app.security import CSRF_COOKIE, login_limiter
+from voiceagent.app.security import CSRF_COOKIE
 from voiceagent.app.settings import instance_settings
 from voiceagent.app.templates import agent_template
-from voiceagent.server import create_app
 
 PW = "correct horse battery"
-
-
-@pytest.fixture
-def platform(tmp_path, monkeypatch):
-    key = generate_key()
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
-    monkeypatch.setenv("ENCRYPTION_KEY", key)
-    monkeypatch.setenv("ALLOW_SIGNUPS", "false")
-    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-    instance_settings.cache_clear()
-    login_limiter._events.clear()
-    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
-    set_database(db)
-    app = create_app()
-    with TestClient(app) as client:
-        client.db = db
-        client.box = SecretBox(key)
-        yield client
-    set_database(None)
-    instance_settings.cache_clear()
 
 
 def run(client, coro_fn, *args):

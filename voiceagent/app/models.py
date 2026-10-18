@@ -127,6 +127,7 @@ class Call(TimestampMixin, Base):
     transcript: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     latency_p50_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    lead_id: Mapped[Optional[str]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
 
 
 class AuditLog(Base):
@@ -137,4 +138,77 @@ class AuditLog(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     action: Mapped[str] = mapped_column(String(64))
     target: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Connector(TimestampMixin, Base):
+    """A CRM connection: mcp | webhook | csv. `config` is non-secret (URLs, tool names, field
+    map); the credential (API key / signing secret) is encrypted like provider keys."""
+
+    __tablename__ = "connectors"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(200))
+    config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, default="")
+    secret_last4: Mapped[str] = mapped_column(String(8), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class Lead(TimestampMixin, Base):
+    __tablename__ = "leads"
+    __table_args__ = (UniqueConstraint("workspace_id", "connector_id", "external_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    connector_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("connectors.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(200), default="")
+    phone: Mapped[str] = mapped_column(String(20), index=True)  # E.164
+    email: Mapped[str] = mapped_column(String(320), default="")
+    company: Mapped[str] = mapped_column(String(200), default="")
+    timezone: Mapped[str] = mapped_column(String(64), default="")
+    consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_evidence: Mapped[str] = mapped_column(Text, default="")
+    # new | called | booked | opted_out | not_interested | failed
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_called_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class DncEntry(Base):
+    __tablename__ = "dnc"
+    __table_args__ = (UniqueConstraint("workspace_id", "phone"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    phone: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(32), default="opt_out")  # opt_out | manual | import
+    source: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OutboxEvent(Base):
+    """A call outcome waiting to be delivered to a connector, retried with backoff until it lands,
+    so a CRM outage never loses a result."""
+
+    __tablename__ = "outbox"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    connector_id: Mapped[str] = mapped_column(ForeignKey("connectors.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="call.completed")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    dead: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

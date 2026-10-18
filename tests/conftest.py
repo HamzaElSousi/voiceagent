@@ -102,3 +102,36 @@ async def drain(reply):
     """Collect an AgentReply's text stream into a string."""
 
     return "".join([d async for d in reply.text_stream])
+
+
+# --------------------------------------------------------------------------------------------
+# Platform (accounts / workspaces / CRM): the real FastAPI app on a throwaway SQLite database
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def platform(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from voiceagent.app.crypto import SecretBox, generate_key
+    from voiceagent.app.db import Database, set_database
+    from voiceagent.app.security import login_limiter
+    from voiceagent.app.settings import instance_settings
+    from voiceagent.server import create_app
+
+    key = generate_key()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    monkeypatch.setenv("ENCRYPTION_KEY", key)
+    monkeypatch.setenv("ALLOW_SIGNUPS", "false")
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    instance_settings.cache_clear()
+    login_limiter._events.clear()
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    set_database(db)
+    app = create_app()
+    with TestClient(app) as client:
+        client.db = db
+        client.box = SecretBox(key)
+        yield client
+    set_database(None)
+    instance_settings.cache_clear()

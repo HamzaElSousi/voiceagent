@@ -72,6 +72,12 @@ async def _lifespan(app: FastAPI):
     db = get_database()
     if db.engine.url.get_backend_name() == "sqlite":
         await db.create_all()
+    # Load phone-number metadata now, in a thread, so the first API request never stalls a call.
+    import asyncio
+
+    from . import phones
+
+    await asyncio.to_thread(phones.warm_up)
     yield
 
 
