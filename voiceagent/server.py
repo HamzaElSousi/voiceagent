@@ -146,7 +146,47 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     except Exception:
         pass
 
+    # Last: the dashboard's catch-all route must not shadow anything registered above.
+    _mount_dashboard(app)
     return app
+
+
+# Paths the dashboard's client-side router must never shadow.
+_SERVER_PREFIXES = ("api/", "voice/", "stream", "health", "ui", "docs", "openapi.json", "assets/")
+
+
+def _dashboard_dir() -> Optional[Path]:
+    candidates = [os.getenv("VOICEAGENT_WEB_DIST"), Path(__file__).resolve().parent.parent / "web" / "dist"]
+    for c in candidates:
+        if c and (Path(c) / "index.html").exists():
+            return Path(c)
+    return None
+
+
+def _mount_dashboard(app: FastAPI) -> None:
+    """Serve the built React dashboard (web/dist) at /, with an SPA fallback so deep links like
+    /calls/<id> load index.html. Skipped when the dashboard has not been built (CLI dev mode)."""
+
+    dist = _dashboard_dir()
+    if dist is None:
+        return
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    index = dist / "index.html"
+    if (dist / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="dashboard-assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def dashboard(path: str):
+        if path.startswith(_SERVER_PREFIXES):
+            from fastapi import HTTPException
+
+            raise HTTPException(404)
+        candidate = (dist / path).resolve()
+        if path and candidate.is_file() and dist.resolve() in candidate.parents:
+            return FileResponse(candidate)  # favicon.svg and other public files
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 async def _run_platform_call(app: FastAPI, media: TwilioMediaStream, params: dict) -> None:

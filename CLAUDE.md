@@ -37,6 +37,10 @@ An AI outbound sales agent that places real phone calls. Pipeline:
   {slug}`, `/voice/status`, `/voice/amd`, `load_platform_call`), `app/worker.py` (`voiceagent worker`:
   campaigns, outbox, connector sync, retention). `/stream` takes the platform branch when the start
   params carry `call_id`; otherwise it is the CLI dev mode from `agent.yaml`.
+- `web/` - the React dashboard (milestone 5): Vite + TypeScript + Tailwind, pages in `web/src/pages`,
+  API client `web/src/api.ts` (CSRF header from the `va_csrf` cookie). `npm run dev` proxies to
+  `voiceagent serve --port 8080`; `npm run build` -> `web/dist`, served by FastAPI at `/` with an SPA
+  fallback (`server._mount_dashboard`, registered last so it never shadows /api, /voice, /ui).
 - `voiceagent/builder.py` - wires a `CallSession` from config + settings (inject fakes for tests).
 - `voiceagent/server.py` - FastAPI: `WS /stream` (Twilio), `/health`, demo UI at `/ui`.
 - `voiceagent/cli.py` - `test-voice` (mocked, no keys), `serve`, `dial`, `run-list`, plus instance
@@ -84,8 +88,8 @@ webhook / CSV connectors, Cal.com, Docker Compose + Caddy on any VPS). Milestone
 `mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) and milestone 2
 (DB, auth, workspaces, encrypted BYO keys, agents + calls API) and milestone 3 (MCP / webhook / CSV
 connectors, outbox, consent + DNC + callee-local hours) and milestone 4 (campaign worker, platform
-stream, inbound/status/AMD per workspace, test calls, numbers, retention) are in. Next: milestone 5,
-the React dashboard.
+stream, inbound/status/AMD per workspace, test calls, numbers, retention) and milestone 5 (React
+dashboard) are in. Next: milestone 6, Docker Compose + Caddy self-hosting and docs.
 Repo rule: nothing tenant-specific (e.g. Social-automate) is
 ever committed; private config goes in gitignored `local/`.
 
