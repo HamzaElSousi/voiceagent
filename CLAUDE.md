@@ -31,9 +31,16 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - `voiceagent/app/eligibility.py` + `voiceagent/phones.py` - who may be dialed: consent, DNC, E.164,
   callee-local hours inside TCPA 8am-9pm (every candidate zone). `app/leads.py` (sync/import/DNC),
   `app/outbox.py` (retry with backoff), `app/call_results.py` (Call row + lead status + DNC + outbox).
+- Calls on the platform (milestone 4): `app/campaigns.py` (`tick()`: claim lead, then dial; DB-counted
+  concurrency; budget/keys/agent checks), `app/dialer.py` (Twilio with the workspace's own account),
+  `app/calltoken.py` (HMAC per-call token carried in stream params), `app/voice.py` (`/voice/inbound/
+  {slug}`, `/voice/status`, `/voice/amd`, `load_platform_call`), `app/worker.py` (`voiceagent worker`:
+  campaigns, outbox, connector sync, retention). `/stream` takes the platform branch when the start
+  params carry `call_id`; otherwise it is the CLI dev mode from `agent.yaml`.
 - `voiceagent/builder.py` - wires a `CallSession` from config + settings (inject fakes for tests).
 - `voiceagent/server.py` - FastAPI: `WS /stream` (Twilio), `/health`, demo UI at `/ui`.
-- `voiceagent/cli.py` - `test-voice` (mocked, no keys), `serve`, `dial`, `run-list`.
+- `voiceagent/cli.py` - `test-voice` (mocked, no keys), `serve`, `dial`, `run-list`, plus instance
+  admin: `init-instance`, `db-upgrade`, `create-admin`, `reset-password`, `worker`.
 - `tests/` - deterministic, fake-driven, zero network. `tests/fakes.py` is the substrate.
 - `call_logs/events/<call_sid>.jsonl` - per-call event timeline (the main live-debugging tool).
 
@@ -76,8 +83,9 @@ Turning VoiceAgent into an open-source, self-hosted platform (plan: workspaces, 
 webhook / CSV connectors, Cal.com, Docker Compose + Caddy on any VPS). Milestone 1 (per-call config,
 `mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) and milestone 2
 (DB, auth, workspaces, encrypted BYO keys, agents + calls API) and milestone 3 (MCP / webhook / CSV
-connectors, outbox, consent + DNC + callee-local hours) are in. Next: milestone 4, the campaign
-worker (dial eligible leads) + workspace-aware `/stream`, `/voice/inbound/{slug}`, `/voice/status`.
+connectors, outbox, consent + DNC + callee-local hours) and milestone 4 (campaign worker, platform
+stream, inbound/status/AMD per workspace, test calls, numbers, retention) are in. Next: milestone 5,
+the React dashboard.
 Repo rule: nothing tenant-specific (e.g. Social-automate) is
 ever committed; private config goes in gitignored `local/`.
 

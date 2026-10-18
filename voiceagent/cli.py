@@ -310,6 +310,25 @@ def init_instance(
         typer.echo("stored provider key is unrecoverable and workspaces must re-enter them.")
 
 
+@app.command("worker")
+def worker(interval: float = typer.Option(5.0, help="Seconds between scheduler ticks")) -> None:
+    """Run the background worker: campaigns, outbox delivery, connector sync, retention."""
+
+    import logging
+
+    from .app.worker import run_forever
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    # Same rule as the server: load heavy modules before the loop starts.
+    import anthropic  # noqa: F401
+    import httpx  # noqa: F401
+
+    from . import phones
+
+    phones.warm_up()
+    asyncio.run(run_forever(interval))
+
+
 @app.command("db-upgrade")
 def db_upgrade() -> None:
     """Apply database migrations (DATABASE_URL from .env)."""

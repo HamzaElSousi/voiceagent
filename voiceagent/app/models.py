@@ -128,6 +128,7 @@ class Call(TimestampMixin, Base):
     latency_p50_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lead_id: Mapped[Optional[str]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), nullable=True)
+    campaign_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
 
 
 class AuditLog(Base):
@@ -212,3 +213,25 @@ class OutboxEvent(Base):
     dead: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Campaign(TimestampMixin, Base):
+    """An outbound run: one agent dialing the eligible leads of a workspace (optionally one
+    connector's leads), within a budget, a concurrency limit and a retry policy."""
+
+    __tablename__ = "campaigns"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"))
+    connector_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("connectors.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|running|paused|done
+    status_reason: Mapped[str] = mapped_column(String(200), default="")
+    budget_usd: Mapped[float] = mapped_column(Float, default=25.0)
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    retry_delay_minutes: Mapped[int] = mapped_column(Integer, default=240)
+

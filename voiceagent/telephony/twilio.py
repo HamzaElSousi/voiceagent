@@ -345,6 +345,7 @@ class TwilioTelephony:
         stream_url: str,
         parameters: dict | None = None,
         amd_callback_url: str | None = None,
+        status_callback_url: str | None = None,
     ) -> str:
         """Dial `to` with a bidirectional Media Stream pointed at `stream_url`.
 
@@ -384,6 +385,14 @@ class TwilioTelephony:
                 async_amd="true",
                 async_amd_status_callback=amd_callback_url,
                 async_amd_status_callback_method="POST",
+            )
+        if status_callback_url:
+            # Final status (completed / busy / no-answer / failed / canceled), so calls that never
+            # reach the media stream still get an outcome.
+            kwargs.update(
+                status_callback=status_callback_url,
+                status_callback_method="POST",
+                status_callback_event=["completed"],
             )
         call = await asyncio.to_thread(client.calls.create, **kwargs)
         return call.sid

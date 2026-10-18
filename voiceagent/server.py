@@ -16,12 +16,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, Request, Response, WebSocket
-
-# Imported at startup, never inside a handler: a cold import on the event loop stalls live calls.
-from twilio.request_validator import RequestValidator
+from fastapi import FastAPI, WebSocket
 
 from .builder import build_session
 from .config import AgentConfig, Settings, load_agent_config, settings_from_env
@@ -57,10 +53,6 @@ def _contact_from_params(params: dict) -> dict:
         "suggested_time": params.get("suggested_time", "later this week"),
         "timezone": params.get("timezone", ""),
     }
-
-
-# Twilio AnsweredBy values that mean nobody is listening live.
-_MACHINE_ANSWERS = {"machine_end_beep", "machine_end_silence", "machine_end_other", "fax"}
 
 
 @asynccontextmanager
@@ -108,6 +100,10 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         try:
             # Read the start handshake first so we know who we are talking to.
             params = await media.start_handshake()
+            if params.get("call_id"):
+                # Platform call: the workspace's agent, keys and lead, authorized by a signed token.
+                await _run_platform_call(app, media, params)
+                return
             contact = _contact_from_params(params)
             config = _load_config()
             session = build_session(config, app.state.settings, contact, media)
@@ -131,28 +127,15 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception:
                 pass
 
-    @app.post("/voice/amd")
-    async def amd_callback(request: Request) -> Response:
-        """Twilio async answering-machine-detection result for an outbound call."""
-
-        body = (await request.body()).decode("utf-8", "replace")
-        form = dict(parse_qsl(body, keep_blank_values=True))
-        if not _valid_twilio_request(app.state.settings, request, form):
-            return Response(status_code=403)
-        sid = form.get("CallSid", "")
-        answered_by = form.get("AnsweredBy", "")
-        if sid and answered_by in _MACHINE_ANSWERS:
-            session = app.state.sessions.get(sid)
-            if session is not None:
-                session.notify_machine(answered_by)
-            else:
-                app.state.amd_early[sid] = answered_by
-        return Response(status_code=204)
-
-    # Platform JSON API: accounts, workspaces, BYO keys, agents, call history.
+    # Platform JSON API (accounts, workspaces, keys, agents, connectors, campaigns) and the
+    # Twilio-facing voice routes (inbound, status, answering-machine detection).
     from .app.api import api_router
+    from .app.voice import amd_router
+    from .app.voice import router as voice_router
 
     app.include_router(api_router)
+    app.include_router(voice_router)
+    app.include_router(amd_router(app.state.sessions, app.state.amd_early))
 
     # Mount the demo Web UI if present (Phase 6). Import is guarded so the core server runs
     # even if the web package is absent.
@@ -166,19 +149,34 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     return app
 
 
-def _valid_twilio_request(settings: Settings, request: Request, form: dict) -> bool:
-    """Check X-Twilio-Signature against the public URL Twilio called. Without an auth token
-    (mocked/dev runs) there is nothing to check against, so requests are accepted."""
+async def _run_platform_call(app: FastAPI, media: TwilioMediaStream, params: dict) -> None:
+    from .app.voice import fail_platform_call, load_platform_call, save_platform_result
 
-    token = settings.twilio_auth_token
-    if not token:
-        return True
-    signature = request.headers.get("X-Twilio-Signature", "")
-    base = (settings.public_base_url or str(request.base_url)).rstrip("/")
-    url = base + request.url.path
-    if request.url.query:
-        url += "?" + request.url.query
-    return RequestValidator(token).validate(url, form, signature)
+    log = logging.getLogger("voiceagent.server")
+    ctx = await load_platform_call(params)
+    if ctx is None:
+        return
+    try:
+        session = build_session(ctx.config, ctx.settings, ctx.contact, media)
+    except Exception as exc:  # e.g. a key was deleted between dial and answer
+        log.warning("platform call %s could not start: %r", ctx.call_id, exc)
+        await fail_platform_call(ctx.call_id, f"could not start: {exc}")
+        return
+    session.events_dir = f"call_logs/events/{ctx.workspace_id}"
+    sid = media.call_sid
+    app.state.sessions[sid] = session
+    early = app.state.amd_early.pop(sid, None)
+    if early:
+        session.notify_machine(early)
+    try:
+        result = await session.run()
+    finally:
+        app.state.sessions.pop(sid, None)
+    # The audio is finished; persisting the outcome is off the call path.
+    try:
+        await save_platform_result(ctx, result)
+    except Exception:
+        log.exception("could not save result for platform call %s", ctx.call_id)
 
 
 # Module-level app for `uvicorn voiceagent.server:app`.
