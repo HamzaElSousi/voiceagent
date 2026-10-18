@@ -1,0 +1,12 @@
+# Automatic HTTPS (Let's Encrypt) for your domain, including the wss:// media streams Twilio opens.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+}

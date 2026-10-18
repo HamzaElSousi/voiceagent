@@ -7,6 +7,7 @@ and require the keys in .env plus a publicly reachable server (ngrok). serve run
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 
 import typer
@@ -133,6 +134,10 @@ def serve(
         "voiceagent.server:app",
         host=host or settings.host,
         port=port or settings.port,
+        # Behind Caddy (docker compose) the app port is not published, so trusting the proxy's
+        # X-Forwarded-* headers is safe and gives real client IPs to the login rate limiter.
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
     )
 
 
@@ -265,6 +270,7 @@ def run_list(
 def init_instance(
     env_file: str = typer.Option(".env", help="Where to write the instance secrets"),
     domain: str = typer.Option("", help="Public domain, e.g. voice.example.com"),
+    print_only: bool = typer.Option(False, "--print", help="Print the lines instead of writing a file"),
 ) -> None:
     """Generate SECRET_KEY, ENCRYPTION_KEY and POSTGRES_PASSWORD into the .env file."""
 
@@ -274,7 +280,7 @@ def init_instance(
     from .app.crypto import generate_key
 
     path = Path(env_file)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = "" if print_only else (path.read_text(encoding="utf-8") if path.exists() else "")
     present = {line.split("=", 1)[0].strip() for line in existing.splitlines() if "=" in line}
     filled = {
         line.split("=", 1)[0].strip()
@@ -289,6 +295,11 @@ def init_instance(
     if domain:
         values["DOMAIN"] = domain
         values["PUBLIC_BASE_URL"] = f"https://{domain}"
+    if print_only:
+        for key, value in values.items():
+            typer.echo(f"{key}={value}")
+        typer.echo("# Back up ENCRYPTION_KEY: without it stored provider keys are unrecoverable.", err=True)
+        return
     added = []
     lines = existing.splitlines()
     for key, value in values.items():

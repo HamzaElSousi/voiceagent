@@ -370,3 +370,15 @@ def test_migration_matches_models(tmp_path):
 
     tables = asyncio.run(_tables()) - {"alembic_version"}
     assert tables == set(Base.metadata.tables)
+
+
+def test_init_instance_print_mode(tmp_path):
+    from typer.testing import CliRunner
+
+    from voiceagent.cli import app
+
+    env = tmp_path / ".env"
+    r = CliRunner().invoke(app, ["init-instance", "--print", "--env-file", str(env), "--domain", "v.example.com"])
+    assert r.exit_code == 0, r.output
+    assert "ENCRYPTION_KEY=" in r.stdout and "PUBLIC_BASE_URL=https://v.example.com" in r.stdout
+    assert not env.exists()  # print mode never writes

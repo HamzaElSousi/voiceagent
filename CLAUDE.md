@@ -49,6 +49,8 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - `call_logs/events/<call_sid>.jsonl` - per-call event timeline (the main live-debugging tool).
 
 ## How to run
+- Self-hosted (production): `docker compose up -d` (see `docs/SELF_HOSTING.md`); entrypoint `docker/entrypoint.sh`
+  runs `db-upgrade` then `serve` (app) or `worker`.
 - Mocked call, no keys: `python -m voiceagent.cli test-voice` (add `--book` for the slot flow)
 - Demo console: `python -m voiceagent.cli serve` then open `http://localhost:8080/ui`
 - Tests (do NOT auto-run; hand the command to the user): `python -m pytest -q`
@@ -88,8 +90,11 @@ webhook / CSV connectors, Cal.com, Docker Compose + Caddy on any VPS). Milestone
 `mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) and milestone 2
 (DB, auth, workspaces, encrypted BYO keys, agents + calls API) and milestone 3 (MCP / webhook / CSV
 connectors, outbox, consent + DNC + callee-local hours) and milestone 4 (campaign worker, platform
-stream, inbound/status/AMD per workspace, test calls, numbers, retention) and milestone 5 (React
-dashboard) are in. Next: milestone 6, Docker Compose + Caddy self-hosting and docs.
+stream, inbound/status/AMD per workspace, test calls, numbers, retention), milestone 5 (React
+dashboard) and milestone 6 (Docker Compose + Caddy self-hosting, `docs/SELF_HOSTING.md`, GHCR release
+workflow, README) are in. Image smoke-tested against Postgres. Remaining: deploy to the user's VPS,
+then connect Social-automate as the first tenant (work in the Social-automate repo + gitignored
+`local/`, never in this repo).
 Repo rule: nothing tenant-specific (e.g. Social-automate) is
 ever committed; private config goes in gitignored `local/`.
 
