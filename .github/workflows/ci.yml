@@ -21,6 +21,31 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+  migrations-postgres:
+    # Tests use SQLite; this proves the Alembic migrations also apply cleanly on Postgres.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: voiceagent
+          POSTGRES_PASSWORD: voiceagent
+          POSTGRES_DB: voiceagent
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U voiceagent"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://voiceagent:voiceagent@localhost:5432/voiceagent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e .
+      - run: voiceagent db-upgrade
+
   image:
     runs-on: ubuntu-latest
     needs: test

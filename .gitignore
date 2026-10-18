@@ -44,3 +44,7 @@ pgdata/
 # Web dashboard build
 web/node_modules/
 web/dist/
+
+# Local dev database (SQLite)
+voiceagent.db
+voiceagent.db-*

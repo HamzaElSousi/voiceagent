@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl
@@ -62,8 +63,20 @@ def _contact_from_params(params: dict) -> dict:
 _MACHINE_ANSWERS = {"machine_end_beep", "machine_end_silence", "machine_end_other", "fax"}
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # SQLite (local dev) gets its tables created on boot. Postgres is migrated by Alembic
+    # (`voiceagent db-upgrade`, run by the container entrypoint) before the server starts.
+    from .app.db import get_database
+
+    db = get_database()
+    if db.engine.url.get_backend_name() == "sqlite":
+        await db.create_all()
+    yield
+
+
 def create_app(config_path: Optional[str] = None) -> FastAPI:
-    app = FastAPI(title="VoiceAgent", version="0.1.0")
+    app = FastAPI(title="VoiceAgent", version="0.1.0", lifespan=_lifespan)
     app.state.config_path = config_path or DEFAULT_CONFIG
     app.state.settings = settings_from_env()
     app.state.outcome_sink = build_outcome_sink(csv_path="call_logs/outcomes.csv")
@@ -129,6 +142,11 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             else:
                 app.state.amd_early[sid] = answered_by
         return Response(status_code=204)
+
+    # Platform JSON API: accounts, workspaces, BYO keys, agents, call history.
+    from .app.api import api_router
+
+    app.include_router(api_router)
 
     # Mount the demo Web UI if present (Phase 6). Import is guarded so the core server runs
     # even if the web package is absent.

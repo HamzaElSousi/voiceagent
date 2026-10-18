@@ -256,5 +256,152 @@ def run_list(
         typer.echo(f"  {outcome}: {count}")
 
 
+# --------------------------------------------------------------------------------------------
+# Self-hosted instance administration
+# --------------------------------------------------------------------------------------------
+
+
+@app.command("init-instance")
+def init_instance(
+    env_file: str = typer.Option(".env", help="Where to write the instance secrets"),
+    domain: str = typer.Option("", help="Public domain, e.g. voice.example.com"),
+) -> None:
+    """Generate SECRET_KEY, ENCRYPTION_KEY and POSTGRES_PASSWORD into the .env file."""
+
+    import secrets as _secrets
+    from pathlib import Path
+
+    from .app.crypto import generate_key
+
+    path = Path(env_file)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    present = {line.split("=", 1)[0].strip() for line in existing.splitlines() if "=" in line}
+    filled = {
+        line.split("=", 1)[0].strip()
+        for line in existing.splitlines()
+        if "=" in line and line.split("=", 1)[1].strip()
+    }
+    values = {
+        "SECRET_KEY": _secrets.token_urlsafe(48),
+        "ENCRYPTION_KEY": generate_key(),
+        "POSTGRES_PASSWORD": _secrets.token_urlsafe(24),
+    }
+    if domain:
+        values["DOMAIN"] = domain
+        values["PUBLIC_BASE_URL"] = f"https://{domain}"
+    added = []
+    lines = existing.splitlines()
+    for key, value in values.items():
+        if key in filled:
+            continue  # never overwrite an existing secret (it would orphan encrypted data)
+        if key in present:
+            lines = [f"{key}={value}" if ln.split("=", 1)[0].strip() == key else ln for ln in lines]
+        else:
+            lines.append(f"{key}={value}")
+        added.append(key)
+    path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    if not added:
+        typer.echo(f"{env_file} already has all instance secrets; nothing changed.")
+        return
+    typer.echo(f"Wrote {', '.join(added)} to {env_file}.")
+    if "ENCRYPTION_KEY" in added:
+        typer.echo("")
+        typer.echo("IMPORTANT: back up ENCRYPTION_KEY with your database backups. Without it, every")
+        typer.echo("stored provider key is unrecoverable and workspaces must re-enter them.")
+
+
+@app.command("db-upgrade")
+def db_upgrade() -> None:
+    """Apply database migrations (DATABASE_URL from .env)."""
+
+    from .app.migrate import upgrade
+
+    upgrade()
+    typer.echo("Database is up to date.")
+
+
+async def _create_admin(email: str, password: str, name: str, workspace: str) -> str:
+    from .app import repo
+    from .app.db import get_database
+    from .app.models import User, utcnow
+    from .app.security import hash_password
+
+    db = get_database()
+    async with db.sessionmaker() as s:
+        if await repo.user_by_email(s, email):
+            return "exists"
+        user = User(
+            email=email.lower(),
+            password_hash=await hash_password(password),
+            name=name,
+            is_instance_admin=True,
+            tos_accepted_at=utcnow(),
+        )
+        s.add(user)
+        await s.flush()
+        await repo.create_workspace(s, user, workspace)
+        await repo.audit(s, "admin.create", user_id=user.id, target=user.email)
+        await s.commit()
+    await db.dispose()
+    return "created"
+
+
+@app.command("create-admin")
+def create_admin(
+    email: str = typer.Option(..., prompt=True),
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+    name: str = typer.Option("", help="Display name"),
+    workspace: str = typer.Option("My workspace", help="Name of the admin's first workspace"),
+) -> None:
+    """Create the instance admin (works even with sign-ups closed)."""
+
+    from .app.security import MIN_PASSWORD_LENGTH
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        typer.echo(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+        raise typer.Exit(1)
+    result = asyncio.run(_create_admin(email, password, name, workspace))
+    if result == "exists":
+        typer.echo(f"A user with email {email} already exists.")
+        raise typer.Exit(1)
+    typer.echo(f"Created instance admin {email}.")
+
+
+async def _reset_password(email: str, password: str) -> bool:
+    from .app import repo
+    from .app.db import get_database
+    from .app.security import hash_password
+
+    db = get_database()
+    async with db.sessionmaker() as s:
+        user = await repo.user_by_email(s, email)
+        if user is None:
+            return False
+        user.password_hash = await hash_password(password)
+        await repo.delete_sessions_for(s, user.id)  # sign out everywhere
+        await repo.audit(s, "admin.reset_password", user_id=user.id, target=user.email)
+        await s.commit()
+    await db.dispose()
+    return True
+
+
+@app.command("reset-password")
+def reset_password(
+    email: str = typer.Option(..., prompt=True),
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+) -> None:
+    """Set a user's password from the server shell (for instances without email)."""
+
+    from .app.security import MIN_PASSWORD_LENGTH
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        typer.echo(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+        raise typer.Exit(1)
+    if not asyncio.run(_reset_password(email, password)):
+        typer.echo(f"No user with email {email}.")
+        raise typer.Exit(1)
+    typer.echo(f"Password updated for {email}; all their sessions were signed out.")
+
+
 if __name__ == "__main__":
     app()

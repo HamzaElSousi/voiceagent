@@ -20,6 +20,10 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - `voiceagent/booking/` - real booking during the call: `flow.py` (BookingFlow: offer slots, pick,
   email capture, reserve), `calcom.py` (Cal.com API v2), `slots.py` / `email.py` (pure helpers),
   `demo.py` (offline DemoBooker for `test-voice --book`). The engine codes against `Booker`.
+- `voiceagent/app/` - the platform (milestone 2): `models.py` (SQLAlchemy async), `repo.py`
+  (`WorkspaceRepo` adds workspace_id to every tenant query), `crypto.py` (Fernet for BYO keys),
+  `security.py` (argon2 in a thread, sessions, CSRF, rate limit), `api/` (JSON API at /api),
+  `migrations/` (Alembic; `voiceagent db-upgrade`). SQLite in dev/tests, Postgres in production.
 - `voiceagent/builder.py` - wires a `CallSession` from config + settings (inject fakes for tests).
 - `voiceagent/server.py` - FastAPI: `WS /stream` (Twilio), `/health`, demo UI at `/ui`.
 - `voiceagent/cli.py` - `test-voice` (mocked, no keys), `serve`, `dial`, `run-list`.
@@ -63,8 +67,9 @@ call goes deaf for the rest of its life. See `ISSUES.md` F16.
 ## Current focus
 Turning VoiceAgent into an open-source, self-hosted platform (plan: workspaces, BYO keys, MCP /
 webhook / CSV connectors, Cal.com, Docker Compose + Caddy on any VPS). Milestone 1 (per-call config,
-`mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) is in. Next:
-milestone 2, DB + auth + workspaces. Repo rule: nothing tenant-specific (e.g. Social-automate) is
+`mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) and milestone 2
+(DB, auth, workspaces, encrypted BYO keys, agents + calls API) are in. Next: milestone 3,
+connectors (MCP / webhook / CSV), outbox, consent + DNC + callee-local calling hours. Repo rule: nothing tenant-specific (e.g. Social-automate) is
 ever committed; private config goes in gitignored `local/`.
 
 ## Key pointers
