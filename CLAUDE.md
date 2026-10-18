@@ -17,6 +17,9 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - `voiceagent/pipeline/assembled.py` - composes STT + TTS + sentence streaming. `realtime.py` is a stub.
 - `voiceagent/stt/deepgram.py`, `voiceagent/tts/elevenlabs.py`, `voiceagent/llm/claude.py`,
   `voiceagent/telephony/twilio.py` - provider clients behind the interfaces.
+- `voiceagent/booking/` - real booking during the call: `flow.py` (BookingFlow: offer slots, pick,
+  email capture, reserve), `calcom.py` (Cal.com API v2), `slots.py` / `email.py` (pure helpers),
+  `demo.py` (offline DemoBooker for `test-voice --book`). The engine codes against `Booker`.
 - `voiceagent/builder.py` - wires a `CallSession` from config + settings (inject fakes for tests).
 - `voiceagent/server.py` - FastAPI: `WS /stream` (Twilio), `/health`, demo UI at `/ui`.
 - `voiceagent/cli.py` - `test-voice` (mocked, no keys), `serve`, `dial`, `run-list`.
@@ -24,7 +27,7 @@ An AI outbound sales agent that places real phone calls. Pipeline:
 - `call_logs/events/<call_sid>.jsonl` - per-call event timeline (the main live-debugging tool).
 
 ## How to run
-- Mocked call, no keys: `python -m voiceagent.cli test-voice`
+- Mocked call, no keys: `python -m voiceagent.cli test-voice` (add `--book` for the slot flow)
 - Demo console: `python -m voiceagent.cli serve` then open `http://localhost:8080/ui`
 - Tests (do NOT auto-run; hand the command to the user): `python -m pytest -q`
 - Live call (needs keys in `.env` + ngrok), see `SETUP_TODO.md`:
@@ -58,12 +61,11 @@ call goes deaf for the rest of its life. See `ISSUES.md` F16.
   warms the LLM behind the greeting. The greeting itself must not depend on a cold path.
 
 ## Current focus
-Milestone 3: conversation quality on live calls. The LLM-driven core + guardrails work and a live
-call now holds a real back-and-forth and books (after the F16 event-loop fix). Open polish items in
-`ISSUES.md`: false-booking on "yes ..." (booking regex too eager), "voice cutting off" (barge-in
-choppiness / one TTS spike), plus Fable's deferred recommendations (Twilio `mark`-based playback,
-shorter greeting, Deepgram auto-reconnect). Architecture + Claude default stay; fix-not-rewrite
-decision is `ISSUES.md` G4.
+Turning VoiceAgent into an open-source, self-hosted platform (plan: workspaces, BYO keys, MCP /
+webhook / CSV connectors, Cal.com, Docker Compose + Caddy on any VPS). Milestone 1 (per-call config,
+`mode: inbound|outbound`, Cal.com booking during the call, async AMD voicemail) is in. Next:
+milestone 2, DB + auth + workspaces. Repo rule: nothing tenant-specific (e.g. Social-automate) is
+ever committed; private config goes in gitignored `local/`.
 
 ## Key pointers
 - Known issues and decisions: `ISSUES.md`

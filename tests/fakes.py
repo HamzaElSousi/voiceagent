@@ -178,3 +178,29 @@ class FakeTelephony:
 
     async def hang_up(self, call_sid: str) -> None:
         self.hung_up.append(call_sid)
+
+
+class FakeBooker:
+    """A scripted calendar. Serves fixed slots and records booking requests. `taken` marks slots
+    that fail as already booked; `fail` makes every booking a calendar error."""
+
+    def __init__(self, slots, taken=(), fail: bool = False):
+        self.slots = list(slots)
+        self.taken = {s.start for s in taken}
+        self.fail = fail
+        self.requests = []
+        self.slot_queries = 0
+
+    async def get_slots(self, start, end, timezone):
+        self.slot_queries += 1
+        return list(self.slots)
+
+    async def create_booking(self, request):
+        from voiceagent.contracts import BookingResult
+
+        self.requests.append(request)
+        if self.fail:
+            return BookingResult(ok=False, error="500: calendar down")
+        if request.slot.start in self.taken:
+            return BookingResult(ok=False, error="400: slot not available", slot_taken=True)
+        return BookingResult(ok=True, booking_ref=f"bk_{len(self.requests)}")

@@ -12,7 +12,7 @@ from typing import Optional
 
 from .compliance import ComplianceGate
 from .config import AgentConfig, Settings
-from .contracts import LLM, STT, TTS, CostMeter, MediaStream, Pipeline
+from .contracts import LLM, STT, TTS, Booker, CostMeter, MediaStream, Pipeline
 from .cost import DollarCostMeter
 from .engine import ConversationEngine
 from .intent import IntentClassifier
@@ -70,6 +70,24 @@ def build_tts(config: AgentConfig, settings: Settings) -> TTS:
     return ElevenLabsTTS(api_key=settings.elevenlabs_api_key, voice_id=config.agent.voice_id)
 
 
+def build_booker(config: AgentConfig, settings: Settings) -> Optional[Booker]:
+    """The calendar the agent books into, or None for log-only booking (booking.provider none)."""
+
+    b = config.booking
+    if b.provider == "none":
+        return None
+    if not settings.calcom_api_key:
+        raise MissingKeyError("CALCOM_API_KEY is not set (booking.provider is calcom)")
+    from .booking.calcom import CalcomBooker
+
+    return CalcomBooker(
+        settings.calcom_api_key,
+        event_type_id=b.event_type_id,
+        username=b.username,
+        event_type_slug=b.event_type_slug,
+    )
+
+
 def build_pipeline(
     config: AgentConfig,
     settings: Settings,
@@ -98,11 +116,22 @@ def build_engine(
     compliance: Optional[ComplianceGate] = None,
     classifier_llm: Optional[LLM] = None,
     settings: Optional[Settings] = None,
+    booker: Optional[Booker] = None,
+    extractor_llm: Optional[LLM] = None,
 ) -> ConversationEngine:
     real_llm = llm or build_llm(config, settings or Settings())
     gate = compliance or ComplianceGate(config.compliance)
     classifier = IntentClassifier(config.script, config.compliance, llm=classifier_llm)
-    return ConversationEngine(config, real_llm, classifier, gate, contact, cost_meter=cost_meter)
+    return ConversationEngine(
+        config,
+        real_llm,
+        classifier,
+        gate,
+        contact,
+        cost_meter=cost_meter,
+        booker=booker,
+        extractor_llm=extractor_llm,
+    )
 
 
 def build_session(
@@ -116,14 +145,26 @@ def build_session(
     tts: Optional[TTS] = None,
     compliance: Optional[ComplianceGate] = None,
     prewarm_llm: bool = True,
+    booker: Optional[Booker] = None,
 ) -> CallSession:
-    """Assemble a ready-to-run CallSession. Inject llm/stt/tts to drive it with fakes in tests;
-    omit them to build real provider clients from settings (live). Pass prewarm_llm=False for
-    mocked runs so the warmup call does not consume a scripted FakeLLM response."""
+    """Assemble a ready-to-run CallSession. Inject llm/stt/tts/booker to drive it with fakes in
+    tests; omit them to build real provider clients from settings (live). Pass prewarm_llm=False
+    for mocked runs so the warmup call does not consume a scripted FakeLLM response."""
 
     meter = DollarCostMeter(per_call_cap_usd=config.limits.per_call_usd)
+    real_llm = llm or build_llm(config, settings)
+    real_booker = booker if booker is not None else build_booker(config, settings)
     engine = build_engine(
-        config, contact, meter, llm=llm, compliance=compliance, settings=settings
+        config,
+        contact,
+        meter,
+        llm=real_llm,
+        compliance=compliance,
+        settings=settings,
+        booker=real_booker,
+        # Live calls let the reply LLM settle ambiguous slot choices; scripted fakes do not, so a
+        # test's canned responses are not consumed by extraction calls.
+        extractor_llm=None if llm is not None else real_llm,
     )
     pipeline = build_pipeline(config, settings, meter, stt=stt, tts=tts)
     return CallSession(
@@ -136,4 +177,5 @@ def build_session(
         max_silences=2,
         barge_in_enabled=config.barge_in,
         prewarm_llm=prewarm_llm,
+        voicemail_action=config.voicemail.action,
     )

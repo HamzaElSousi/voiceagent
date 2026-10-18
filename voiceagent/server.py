@@ -15,8 +15,12 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, Response, WebSocket
+
+# Imported at startup, never inside a handler: a cold import on the event loop stalls live calls.
+from twilio.request_validator import RequestValidator
 
 from .builder import build_session
 from .config import AgentConfig, Settings, load_agent_config, settings_from_env
@@ -50,7 +54,12 @@ def _contact_from_params(params: dict) -> dict:
         "phone": params.get("phone", ""),
         "email": params.get("email", ""),
         "suggested_time": params.get("suggested_time", "later this week"),
+        "timezone": params.get("timezone", ""),
     }
+
+
+# Twilio AnsweredBy values that mean nobody is listening live.
+_MACHINE_ANSWERS = {"machine_end_beep", "machine_end_silence", "machine_end_other", "fax"}
 
 
 def create_app(config_path: Optional[str] = None) -> FastAPI:
@@ -58,6 +67,9 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
     app.state.config_path = config_path or DEFAULT_CONFIG
     app.state.settings = settings_from_env()
     app.state.outcome_sink = build_outcome_sink(csv_path="call_logs/outcomes.csv")
+    # Live sessions by call SID, so carrier callbacks (answering machine detection) reach them.
+    app.state.sessions = {}
+    app.state.amd_early = {}  # AMD results that arrived before the media stream connected
 
     def _load_config() -> AgentConfig:
         return load_agent_config(app.state.config_path)
@@ -80,7 +92,15 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             contact = _contact_from_params(params)
             config = _load_config()
             session = build_session(config, app.state.settings, contact, media)
-            result = await session.run()
+            sid = media.call_sid
+            app.state.sessions[sid] = session
+            early = app.state.amd_early.pop(sid, None)
+            if early:
+                session.notify_machine(early)
+            try:
+                result = await session.run()
+            finally:
+                app.state.sessions.pop(sid, None)
             await app.state.outcome_sink.record(result)
         except Exception:
             # Never let one call crash the server, but do not be blind: log the failure so a
@@ -92,6 +112,24 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
             except Exception:
                 pass
 
+    @app.post("/voice/amd")
+    async def amd_callback(request: Request) -> Response:
+        """Twilio async answering-machine-detection result for an outbound call."""
+
+        body = (await request.body()).decode("utf-8", "replace")
+        form = dict(parse_qsl(body, keep_blank_values=True))
+        if not _valid_twilio_request(app.state.settings, request, form):
+            return Response(status_code=403)
+        sid = form.get("CallSid", "")
+        answered_by = form.get("AnsweredBy", "")
+        if sid and answered_by in _MACHINE_ANSWERS:
+            session = app.state.sessions.get(sid)
+            if session is not None:
+                session.notify_machine(answered_by)
+            else:
+                app.state.amd_early[sid] = answered_by
+        return Response(status_code=204)
+
     # Mount the demo Web UI if present (Phase 6). Import is guarded so the core server runs
     # even if the web package is absent.
     try:
@@ -102,6 +140,21 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         pass
 
     return app
+
+
+def _valid_twilio_request(settings: Settings, request: Request, form: dict) -> bool:
+    """Check X-Twilio-Signature against the public URL Twilio called. Without an auth token
+    (mocked/dev runs) there is nothing to check against, so requests are accepted."""
+
+    token = settings.twilio_auth_token
+    if not token:
+        return True
+    signature = request.headers.get("X-Twilio-Signature", "")
+    base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+    url = base + request.url.path
+    if request.url.query:
+        url += "?" + request.url.query
+    return RequestValidator(token).validate(url, form, signature)
 
 
 # Module-level app for `uvicorn voiceagent.server:app`.

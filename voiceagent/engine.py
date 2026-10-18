@@ -11,9 +11,12 @@ Deterministic code only owns the guardrails that must be reliable:
   - booking agreement      -> log the booked_meeting outcome + a graceful close, then end
     (only once the agent has actually offered the meeting, so an early "sure" is not a booking)
 
-Booking currently only LOGS the intent (outcome + transcript). Giving the agent a real cal.com
-booking is a planned future integration (see PRD.md "Future work"); the graceful close is written to
-promise a follow-up rather than to claim a specific slot was reserved.
+With a Booker configured (booking.provider in agent.yaml), agreement hands the conversation to
+BookingFlow (voiceagent/booking/flow.py), which offers real open slots and reserves one during the
+call. Without one, booking only LOGS the intent and the close promises a follow-up rather than
+claiming a specific slot was reserved.
+
+The prompt adapts to the agent's mode: outbound pitches; inbound answers as a receptionist.
 
 The engine keeps the same public surface the CallSession drives (open / handle / voicemail /
 .state / .transcript / AgentReply) and stays testable with a FakeLLM, zero network.
@@ -26,10 +29,12 @@ import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
+from .booking.flow import BookingFlow
 from .compliance import ComplianceGate
 from .config import AgentConfig
 from .contracts import (
     LLM,
+    Booker,
     CallState,
     CostMeter,
     Intent,
@@ -104,6 +109,8 @@ class ConversationEngine:
         compliance: ComplianceGate,
         contact: Optional[dict] = None,
         cost_meter: Optional[CostMeter] = None,
+        booker: Optional[Booker] = None,
+        extractor_llm: Optional[LLM] = None,
     ):
         self.config = config
         self.llm = llm
@@ -115,8 +122,42 @@ class ConversationEngine:
         self.state: CallState = CallState.DIALING
         self.transcript: list[TurnRecord] = []
         self._meeting_offered = False
-        self._booking_confirmed = False  # set once the contact agrees; next turn closes the call
+        self._legacy_booking_confirmed = False  # no-booker agreement; next turn closes the call
         self._system_cache: Optional[str] = None
+        self.booking: Optional[BookingFlow] = None
+        if booker is not None:
+            b = config.booking
+            self.booking = BookingFlow(
+                booker,
+                timezone_name=self.contact.get("timezone") or config.booking_timezone,
+                contact=self.contact,
+                offer_count=b.offer_count,
+                lookahead_days=b.lookahead_days,
+                min_notice_hours=b.min_notice_hours,
+                booking_url=b.booking_url,
+                extractor_llm=extractor_llm,
+                cost_meter=cost_meter,
+            )
+
+    @property
+    def _booking_confirmed(self) -> bool:
+        """True once the contact agreed to meet (and, with a booker, the booking step finished), so
+        the next turn delivers the two-beat goodbye."""
+
+        if self.booking is not None and self.booking.confirmed:
+            return True
+        return self._legacy_booking_confirmed
+
+    def prepare(self) -> None:
+        """Start background work for the call (slot prefetch). Called by the session at call start,
+        so offering times later costs nothing on the turn."""
+
+        if self.booking is not None:
+            self.booking.start_prefetch()
+
+    async def finish(self) -> None:
+        if self.booking is not None:
+            await self.booking.finish()
 
     # -- template rendering ------------------------------------------------------------------
 
@@ -189,16 +230,34 @@ class ConversationEngine:
         cfg = self.config
         name = self.contact.get("name", "there")
         pitch = self._render(cfg.script.value_prop)
+        meeting = cfg.script.meeting
         disclosure = getattr(cfg.compliance, "ai_disclosure", "")
+        inbound = cfg.mode == "inbound"
 
-        lines = [
-            cfg.agent.persona.strip(),
-            "",
-            f"You are on a live outbound phone call with {name}. You are an AI voice assistant, "
-            "and you have already disclosed that. Speak naturally, like a real person on the phone.",
-            "",
-            "Your goal is to book a 15-minute demo. Weave this core pitch in naturally early on, in "
-            f'your own words, do not read it verbatim: "{pitch}"',
+        if inbound:
+            lines = [
+                cfg.agent.persona.strip(),
+                "",
+                "You are answering an inbound phone call. The caller phoned the business. You are "
+                "an AI voice assistant, and you have already disclosed that. Speak naturally, "
+                "like a friendly receptionist.",
+                "",
+                "Your goal: find out what the caller needs, answer briefly, and when it fits, offer "
+                f"to book {meeting} with the team.",
+            ]
+            if pitch:
+                lines.append(f'What the business offers (use as background, do not recite): "{pitch}"')
+        else:
+            lines = [
+                cfg.agent.persona.strip(),
+                "",
+                f"You are on a live outbound phone call with {name}. You are an AI voice assistant, "
+                "and you have already disclosed that. Speak naturally, like a real person on the phone.",
+                "",
+                f"Your goal is to book {meeting}. Weave this core pitch in naturally early on, in "
+                f'your own words, do not read it verbatim: "{pitch}"',
+            ]
+        lines += [
             "",
             "Rules:",
             "- CRITICAL: keep replies to ONE short spoken sentence whenever possible, and never "
@@ -208,12 +267,17 @@ class ConversationEngine:
             "- Be genuinely helpful and never pushy. If they are clearly not interested after you "
             "have made your case once, thank them warmly and let them go.",
             "- Answer honestly and briefly. If they ask who you are or if you are an AI, say yes, "
-            "you are an AI assistant calling on their behalf" + (f' ({disclosure})' if disclosure else "")
-            + ". If they ask how you got their number, say they are on a contact list you are "
-            "reaching out to and they can opt out any time.",
+            "you are an AI assistant" + ("" if inbound else " calling on the company's behalf")
+            + (f' ({disclosure})' if disclosure else "") + ".",
             "- If you do not know something, say you'll have someone follow up.",
-            "- When they agree to the demo, confirm warmly in one short sentence.",
+            "- When they agree to meet, confirm warmly in one short sentence.",
         ]
+        if not inbound:
+            lines.insert(
+                -2,
+                "- If they ask how you got their number, say they are on a contact list you are "
+                "reaching out to and they can opt out any time.",
+            )
 
         if cfg.script.objections:
             lines.append("")
@@ -230,9 +294,10 @@ class ConversationEngine:
 
         parts: list[str] = []
         try:
-            async for delta in self.llm.stream(
-                self._llm_messages(), system=self._system_prompt()
-            ):
+            system = self._system_prompt()
+            if self.booking is not None:
+                system += self.booking.context()
+            async for delta in self.llm.stream(self._llm_messages(), system=system):
                 parts.append(delta)
                 yield delta
         finally:
@@ -281,7 +346,11 @@ class ConversationEngine:
         """Answering machine detected: leave a short message and end."""
 
         self.state = CallState.VOICEMAIL
-        msg = self._render(self.config.script.greeting)
+        vm = self.config.voicemail.message or (
+            "Hi {contact_name}, this is " + self.config.agent.name + ". Sorry I missed you, "
+            "I'll try you again another time. Have a great day."
+        )
+        msg = self.compliance.apply_disclosure(self._render(vm))
         return AgentReply(
             text_stream=self._static(msg),
             state=CallState.VOICEMAIL,
@@ -357,6 +426,17 @@ class ConversationEngine:
                 text_stream=self._static(_SILENCE_LINE), state=self.state, intent=result
             )
 
+        # Booking in progress (choosing a slot, giving an email): the flow owns the turn, or hands
+        # it to the LLM (grounded with the offered times) when the contact asks something.
+        if self.booking is not None and self.booking.active:
+            stream = await self.booking.handle(contact_text)
+            self.state = CallState.BOOKING
+            if stream is not None:
+                return AgentReply(
+                    text_stream=self._tracked(stream), state=CallState.BOOKING, intent=result
+                )
+            return self._llm_reply(CallState.BOOKING, result)
+
         # Booking: only a real booking once the meeting has actually been offered AND the contact's
         # turn is a clean confirmation, not an affirmative wrapped in an info request or question
         # ("Yes, tell me more" must NOT book). Otherwise let the LLM keep the conversation going.
@@ -366,7 +446,13 @@ class ConversationEngine:
             and not _INFO_REQUEST_RE.search(contact_text)
         ):
             self.state = CallState.BOOKING
-            self._booking_confirmed = True  # next turn (or a silence) delivers the goodbye + end
+            if self.booking is not None:
+                return AgentReply(
+                    text_stream=self._tracked(self.booking.offer()),
+                    state=CallState.BOOKING,
+                    intent=result,
+                )
+            self._legacy_booking_confirmed = True  # next turn (or a silence) delivers the goodbye
             return AgentReply(
                 text_stream=self._static(_BOOKING_CONFIRM_LINE),
                 state=CallState.BOOKING,

@@ -66,6 +66,7 @@ class CallSession:
         playback_margin_seconds: float = 0.4,
         events_dir: Optional[str] = "call_logs/events",
         prewarm_llm: bool = True,
+        voicemail_action: str = "leave_message",
     ):
         self.engine = engine
         self.pipeline = pipeline
@@ -97,6 +98,9 @@ class CallSession:
         # Warm the LLM connection during the greeting to hide its cold-start. Turned off for
         # scripted-fake tests, where a warmup call would consume a canned FakeLLM response.
         self.prewarm_llm = prewarm_llm
+        # What to do when the carrier reports an answering machine (Twilio async AMD).
+        self.voicemail_action = voicemail_action
+        self._machine_detected = asyncio.Event()
 
         self._turns: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self._utterance_parts: list[str] = []  # FINAL transcript segments since the last endpoint
@@ -140,6 +144,10 @@ class CallSession:
             # not pay the ~13s cold-start (client + DNS/TLS). Best-effort; failures are ignored.
             if self.prewarm_llm:
                 prewarm_task = asyncio.create_task(self._prewarm_llm())
+            # Background prep owned by the engine (e.g. prefetching calendar slots).
+            prepare = getattr(self.engine, "prepare", None)
+            if prepare is not None:
+                prepare()
             outcome, reason = await self._converse()
         except Exception as exc:  # never let an integration error escape as a crash
             self._errors.append(repr(exc))
@@ -154,7 +162,33 @@ class CallSession:
                         pass
             await self._safe(self.pipeline.close())
             await self._safe(self.media.close())
+            # Let an in-flight booking land so the result carries its reference.
+            finish = getattr(self.engine, "finish", None)
+            if finish is not None:
+                await self._safe(finish())
         return self._build_result(outcome, reason)
+
+    # -- voicemail (answering machine detection) ----------------------------------------------
+
+    def notify_machine(self, answered_by: str = "machine") -> None:
+        """Called by the server when Twilio's async AMD reports a machine. Cuts the current agent
+        turn and wakes the conversation loop, which then leaves the voicemail (or hangs up)."""
+
+        if self._machine_detected.is_set():
+            return
+        self._log("machine_detected", answered_by=answered_by)
+        self._machine_detected.set()
+        if self._agent_speaking and not self._barge_in_locked:
+            asyncio.create_task(self._safe(self.pipeline.barge_in()))
+        # Wake _await_user_turn so the loop notices immediately.
+        self._turns.put_nowait(("", time.perf_counter()))
+
+    async def _handle_machine(self) -> tuple[Outcome, str]:
+        if self.voicemail_action == "hang_up":
+            return Outcome.VOICEMAIL, "answering machine, hung up"
+        reply = self.engine.voicemail()
+        await self._speak_reply(reply, interruptible=False)
+        return Outcome.VOICEMAIL, "answering machine, left a message"
 
     async def _prewarm_llm(self) -> None:
         """Fire a tiny throwaway generation to establish the LLM's HTTP connection before the first
@@ -289,12 +323,15 @@ class CallSession:
         disclosure, greeting = self.engine.opening()
         if disclosure is not None:
             await self._speak_reply(disclosure, interruptible=False)
-        await self._speak_reply(greeting, interruptible=True)
+        if not self._machine_detected.is_set():
+            await self._speak_reply(greeting, interruptible=True)
 
         silences = 0
         turns = 0
         while turns < self.max_turns:
             turns += 1
+            if self._machine_detected.is_set():
+                return await self._handle_machine()
 
             if self.cost_meter.over_call_cap():
                 return Outcome.BUDGET_EXCEEDED, "per-call budget cap reached"
@@ -321,6 +358,10 @@ class CallSession:
                 continue
 
             text, endpoint_at = turn
+            if self._machine_detected.is_set():
+                return await self._handle_machine()
+            if not text:
+                continue
             silences = 0
             reply = await self._safe_handle(text)
             await self._speak_reply(reply, endpoint_at=endpoint_at)
@@ -483,8 +524,19 @@ class CallSession:
         self.cost_meter.add_stt_seconds(stt_seconds if stt_seconds is not None else duration)
         self.cost_meter.add_telephony_seconds(duration)
 
+        booking = getattr(self.engine, "booking", None)
+        booking_ref = getattr(booking, "booking_ref", None) or None
+        booked = getattr(booking, "booked_slot", None)
+        booked_slot = booked.start.isoformat() if booked is not None else None
+
         call_sid = getattr(self.media, "call_sid", "")
-        self._log("call_end", outcome=outcome.value, reason=reason, barge_ins=self._barge_ins)
+        self._log(
+            "call_end",
+            outcome=outcome.value,
+            reason=reason,
+            barge_ins=self._barge_ins,
+            booking_ref=booking_ref,
+        )
         self._write_events(call_sid)
 
         return CallResult(
@@ -498,4 +550,6 @@ class CallSession:
             latencies=list(self._latencies),
             end_reason=reason,
             error="; ".join(self._errors) if self._errors else None,
+            booking_ref=booking_ref,
+            booked_slot=booked_slot,
         )

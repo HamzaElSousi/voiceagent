@@ -1,0 +1,54 @@
+# inbound.yaml: an AI receptionist that answers calls and books meetings.
+# Point your Twilio number's voice webhook at this server (see docs) and run it with
+# VOICEAGENT_CONFIG=examples/inbound.yaml. Secrets never go here; they live in .env.
+
+mode: inbound
+
+agent:
+  name: Sam
+  voice_id: EXAVITQu4vr4xnSDxMaL
+  persona: |
+    You are Sam, the friendly front desk for Acme Corp, a project-management software company.
+    Keep responses to one short sentence. Be warm and efficient.
+    If you don't know something, say "I'll have someone from the team follow up."
+
+llm:
+  provider: claude
+  model: claude-haiku-4-5
+  max_tokens: 64
+  temperature: 0.5
+
+endpointing_ms: 250
+utterance_end_ms: 1000
+
+script:
+  greeting: "Thanks for calling Acme. How can I help you today?"
+  # Background the agent can draw on when answering questions (not recited).
+  value_prop: "Acme helps teams plan projects and cut delays by about 40%. Plans start at $12 per user per month, with a free 14-day trial."
+  meeting: "a 15-minute call with the team"
+  objections: []
+  booking_signal: "yes|yeah|yep|sure|okay|sounds good|that works|works for me|let's book|book it|please|perfect"
+  booking_response: "Great, let's find you a time."
+  end_signal: "goodbye|good bye|bye now|that's all|that's it|i have to go|gotta go"
+
+outcomes: [booked_meeting, callback_requested, not_interested]
+
+limits:
+  per_call_usd: 0.30
+  per_campaign_usd: 25.00
+
+compliance:
+  ai_disclosure: "Hi, you've reached Acme. I'm an AI assistant."
+  disclose_in_greeting: true
+  recording_consent: "This call may be recorded for quality. Is that okay?"
+  require_recording_consent: false
+  opt_out_phrases: ["remove me", "do not call", "don't call", "take me off", "stop calling"]
+  do_not_call_file: "do_not_call.csv"
+
+booking:
+  provider: none            # set to calcom + event type to book real slots
+  timezone: America/New_York
+  offer_count: 2
+
+voicemail:
+  detect: false             # not used for inbound calls

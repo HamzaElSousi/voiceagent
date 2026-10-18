@@ -21,7 +21,10 @@ real back-and-forth: instant greeting (first audio 0.24s), answered "who is this
 my number" (x2), "what do you guys do", an opt-out question, ~0.8-1.1s per turn, and booked. The core
 works. Remaining items are polish surfaced by that call plus Fable's deferred recommendations.
 
-### O12. False booking on "yes ..." (booking regex too eager)
+### O12. False booking on "yes ..." (booking regex too eager) - MITIGATED (2026-10-18)
+`_INFO_REQUEST_RE` already rejects "yes, tell me more". With a Booker, a "yes" only starts the slot
+offer; nothing is booked until the contact picks a specific time, so a false "yes" costs one
+question instead of a phantom booking. Original note:
 Live: the contact said "Yes. Tell me more." and the agent BOOKED and hung up, because the booking
 signal regex matches the bare "yes" and `_meeting_offered` was already true. "Yes, tell me more" is a
 request for more info, not consent to book. Fix: booking should require the "yes" to actually be
@@ -52,7 +55,11 @@ delivers `_BOOKING_GOODBYE_LINE` and ends with `BOOKED_MEETING`. `session._build
 net: if the call drops between beats (hangup/budget/deaf STT), the booking is still recorded (opt-out
 still wins). Tests updated for the two-beat flow. Separate from O11 (capturing the real time = cal.com).
 
-### O11. Booking closes before the contact finishes giving the time
+### O11. Booking closes before the contact finishes giving the time - FIXED with a Booker (2026-10-18)
+With `booking.provider: calcom`, agreement now hands off to BookingFlow: it offers 2 real open
+slots, resolves the pick ("the first one", "Tuesday at 10"), captures and reads back an email if
+missing, reserves the slot via Cal.com, and confirms the actual time before the two-beat close.
+Still applies with `provider: none` (log-only booking). Original note:
 Because booking only logs intent, the agent closed as soon as agreement was detected, cutting off
 "Saturday at ten." It felt abrupt. Acceptable for now (intent-only), but when cal.com lands the
 booking must capture the actual time/slot before closing. Tracked with the cal.com future goal.

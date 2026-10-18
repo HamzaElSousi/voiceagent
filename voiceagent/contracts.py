@@ -18,6 +18,7 @@ and the pipeline only ever move mu-law frames.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import AsyncIterator, Awaitable, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
@@ -164,6 +165,39 @@ class CallResult:
     latencies: list[LatencySample] = field(default_factory=list)
     end_reason: str = ""      # human-readable, e.g. "booking confirmed", "budget cap hit"
     error: Optional[str] = None
+    booking_ref: Optional[str] = None   # calendar booking id when a real slot was booked
+    booked_slot: Optional[str] = None   # ISO-8601 start of the booked slot (UTC)
+
+
+# --------------------------------------------------------------------------------------------
+# Booking: real calendar slots offered and reserved during the call
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class Slot:
+    """One bookable calendar slot. `start` is timezone-aware."""
+
+    start: datetime
+    end: Optional[datetime] = None
+
+
+@dataclass(slots=True)
+class BookingRequest:
+    slot: Slot
+    name: str
+    email: str
+    timezone: str              # attendee IANA timezone, for the invite
+    phone: str = ""
+    notes: str = ""
+
+
+@dataclass(slots=True)
+class BookingResult:
+    ok: bool
+    booking_ref: str = ""
+    error: str = ""
+    slot_taken: bool = False   # the slot was booked by someone else in the meantime
 
 
 # --------------------------------------------------------------------------------------------
@@ -334,3 +368,15 @@ class OutcomeSink(Protocol):
     """Where finished calls are logged (CSV file, webhook, both)."""
 
     async def record(self, result: CallResult) -> None: ...
+
+
+@runtime_checkable
+class Booker(Protocol):
+    """A calendar the agent can book into (Cal.com today). Implementations must be fully async:
+    they run during a live call, so they may never block the event loop."""
+
+    async def get_slots(self, start: datetime, end: datetime, timezone: str) -> list[Slot]:
+        """Open slots between start and end, earliest first."""
+
+    async def create_booking(self, request: BookingRequest) -> BookingResult:
+        """Reserve a slot. Never raises for an expected failure; returns ok=False instead."""

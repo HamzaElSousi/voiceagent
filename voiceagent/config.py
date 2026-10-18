@@ -59,7 +59,10 @@ class Objection(BaseModel):
 
 class ScriptConfig(BaseModel):
     greeting: str
-    value_prop: str
+    # Outbound: the core pitch. Inbound: optional background on what the business offers.
+    value_prop: str = ""
+    # What the agent is trying to book, as spoken in the prompt ("a 15-minute demo").
+    meeting: str = "a 15-minute demo"
     objections: list[Objection] = Field(default_factory=list)
     max_objections: int = Field(2, ge=0, le=10)
     booking_signal: str
@@ -87,8 +90,9 @@ class CallingHours(BaseModel):
     @classmethod
     def _parse_hhmm(cls, v: object) -> object:
         if isinstance(v, str):
-            hh, mm = v.split(":")
-            return time(int(hh), int(mm))
+            # "09:00" from YAML, or "09:00:00" from a JSON round-trip (DB / API).
+            parts = v.split(":")
+            return time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
         return v
 
     @field_validator("timezone")
@@ -101,6 +105,56 @@ class CallingHours(BaseModel):
         except ZoneInfoNotFoundError as exc:
             raise ValueError(f"unknown timezone {v!r}") from exc
         return v
+
+
+class BookingConfig(BaseModel):
+    """Where real meetings get booked. "none" keeps the legacy behaviour: the agreement is logged
+    as the booked_meeting outcome and someone follows up. The API key lives in .env / the
+    dashboard (CALCOM_API_KEY), never here."""
+
+    provider: Literal["none", "calcom"] = "none"
+    # Cal.com event type: either the numeric id, or the username + slug pair (e.g. "acme", "15min").
+    event_type_id: Optional[int] = None
+    username: Optional[str] = None
+    event_type_slug: Optional[str] = None
+    # Timezone slots are spoken in when the contact's own timezone is unknown. Defaults to the
+    # compliance calling-hours timezone.
+    timezone: Optional[str] = None
+    lookahead_days: int = Field(7, ge=1, le=30)
+    min_notice_hours: float = Field(2.0, ge=0, le=168)
+    offer_count: int = Field(2, ge=1, le=3)    # slots offered per round; 2 is easiest to hear
+    # Spoken fallback when no slot fits or the calendar is unreachable ("I'll send you a link").
+    booking_url: str = ""
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_booking_tz(cls, v: Optional[str]) -> Optional[str]:
+        return CallingHours._known_tz(v) if v else v
+
+    @model_validator(mode="after")
+    def _check_event_type(self) -> "BookingConfig":
+        if self.provider == "calcom" and not (
+            self.event_type_id or (self.username and self.event_type_slug)
+        ):
+            raise ValueError(
+                "booking.provider calcom needs booking.event_type_id, or booking.username "
+                "plus booking.event_type_slug"
+            )
+        return self
+
+
+class VoicemailConfig(BaseModel):
+    """Outbound answering-machine handling (Twilio async AMD)."""
+
+    detect: bool = True
+    action: Literal["leave_message", "hang_up"] = "leave_message"
+    # Spoken after the beep. Supports {contact_name}. Empty uses a short default. The AI
+    # disclosure is always prepended when disclose_in_greeting is on.
+    message: str = ""
+
+    model_config = {"extra": "forbid"}
 
 
 class ComplianceConfig(BaseModel):
@@ -142,6 +196,8 @@ class AgentConfig(BaseModel):
     """The whole agent.yaml, validated."""
 
     agent: AgentPersona
+    # outbound: the agent places the call and pitches. inbound: it answers calls as a receptionist.
+    mode: Literal["outbound", "inbound"] = "outbound"
     llm: LLMConfig = Field(default_factory=LLMConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     # Deepgram turn-end detection. endpointing_ms is the silence (ms) that marks speech_final,
@@ -157,8 +213,27 @@ class AgentConfig(BaseModel):
     outcomes: list[str] = Field(default_factory=lambda: sorted(VALID_OUTCOMES))
     limits: Limits = Field(default_factory=Limits)
     compliance: ComplianceConfig = Field(default_factory=ComplianceConfig)
+    booking: BookingConfig = Field(default_factory=BookingConfig)
+    voicemail: VoicemailConfig = Field(default_factory=VoicemailConfig)
 
     model_config = {"extra": "forbid"}
+
+    @classmethod
+    def from_dict(cls, raw: dict, source: str = "agent config") -> "AgentConfig":
+        """Validate a config mapping from any source (YAML file, database, API body). Enforces the
+        same no-secrets rule as the YAML loader."""
+
+        if not isinstance(raw, dict):
+            raise AgentConfigError(f"{source} must be a mapping at the top level")
+        _reject_inline_secrets(raw)
+        try:
+            return cls.model_validate(raw)
+        except ValidationError as exc:
+            raise AgentConfigError(f"invalid {source}:\n{exc}") from exc
+
+    @property
+    def booking_timezone(self) -> str:
+        return self.booking.timezone or self.compliance.calling_hours.timezone
 
     @model_validator(mode="after")
     def _check_outcomes(self) -> "AgentConfig":
@@ -187,13 +262,7 @@ def load_agent_config(path: str | Path) -> AgentConfig:
         raise AgentConfigError(f"could not parse YAML in {p}: {exc}") from exc
     if not isinstance(raw, dict):
         raise AgentConfigError(f"{p} must be a YAML mapping at the top level")
-
-    _reject_inline_secrets(raw)
-
-    try:
-        return AgentConfig.model_validate(raw)
-    except ValidationError as exc:
-        raise AgentConfigError(f"invalid agent config {p}:\n{exc}") from exc
+    return AgentConfig.from_dict(raw, source=f"agent config {p}")
 
 
 # Key-name patterns that must never appear in agent.yaml; secrets belong in .env only.
@@ -233,6 +302,7 @@ class Settings(BaseModel):
     elevenlabs_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    calcom_api_key: Optional[str] = None
     public_base_url: Optional[str] = None
     host: str = "0.0.0.0"
     port: int = 8000
@@ -270,6 +340,7 @@ def settings_from_env() -> Settings:
         elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY") or None,
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
+        calcom_api_key=os.getenv("CALCOM_API_KEY") or None,
         public_base_url=os.getenv("PUBLIC_BASE_URL") or None,
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),

@@ -1,6 +1,9 @@
 # agent.yaml: the entire script, persona, and policy for one VoiceAgent.
 # Secrets (API keys) never go here. They live in .env.
 
+# outbound: the agent places calls and pitches. inbound: it answers calls (see inbound.yaml).
+mode: outbound
+
 agent:
   name: Alex
   voice_id: EXAVITQu4vr4xnSDxMaL    # ElevenLabs voice ID
@@ -31,6 +34,7 @@ utterance_end_ms: 1000
 script:
   greeting: "Hi, is this {contact_name}? This is Alex from Acme Corp. Do you have 30 seconds?"
   value_prop: "We help teams like yours cut project delays by 40%. Would you be open to a 15-minute demo this week?"
+  meeting: "a 15-minute demo"
 
   objections:
     - trigger: "not interested"
@@ -44,12 +48,33 @@ script:
   # naturally; max_objections is retained for config compatibility but no longer ends the call.
   max_objections: 2
   # Booking only counts once the agent has actually offered the meeting (see engine _meeting_offered),
-  # so an early "sure" is not a false booking. Booking currently logs the intent (cal.com is future).
+  # so an early "sure" is not a false booking. What happens next is set by `booking:` below.
   booking_signal: "yes|yeah|yep|sure|okay|sounds good|sounds great|let's do it|that works|works for me|let's book|book it|sign me up|i'm in|set it up|let's set|perfect"
   booking_response: "Perfect! I'll send a calendar invite to {contact_email}. Does {suggested_time} work?"
   # Only genuine call-enders here. A soft "not interested" is left to the LLM to handle gracefully,
   # so the agent does not hang up the instant someone hesitates.
   end_signal: "goodbye|good bye|bye now|i have to go|i've got to go|gotta go|hang up"
+
+# Real booking during the call. provider "none" logs the agreement and someone follows up.
+# provider "calcom": the agent reads out real open slots and books one live. Needs CALCOM_API_KEY
+# in .env, plus either event_type_id or username + event_type_slug (from your Cal.com event URL,
+# e.g. cal.com/acme/15min -> username acme, event_type_slug 15min).
+booking:
+  provider: none
+  # event_type_id: 123456
+  # username: acme
+  # event_type_slug: 15min
+  timezone: America/New_York   # slots are spoken in the contact's timezone when known, else this
+  lookahead_days: 7
+  min_notice_hours: 2
+  offer_count: 2
+  booking_url: ""              # optional fallback link when no slot fits
+
+# Answering machines (outbound). Twilio async AMD listens without delaying the greeting.
+voicemail:
+  detect: true
+  action: leave_message        # leave_message | hang_up
+  message: "Hi {contact_name}, this is Alex from Acme Corp. Sorry I missed you, I'll try you again soon. Have a great day."
 
 outcomes: [booked_meeting, callback_requested, not_interested, voicemail, no_answer]
 

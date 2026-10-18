@@ -344,6 +344,7 @@ class TwilioTelephony:
         from_: str,
         stream_url: str,
         parameters: dict | None = None,
+        amd_callback_url: str | None = None,
     ) -> str:
         """Dial `to` with a bidirectional Media Stream pointed at `stream_url`.
 
@@ -365,18 +366,26 @@ class TwilioTelephony:
             parameters: Optional contact key-value pairs forwarded to the server
                 via TwiML <Parameter> tags (e.g. name, phone, email,
                 suggested_time). Values are XML-escaped inside build_stream_twiml.
+            amd_callback_url: When set, enable async answering-machine detection and
+                have Twilio POST the result (AnsweredBy) to this URL.
 
         Returns:
             The Twilio call SID (CA...) of the newly created call.
         """
         client = self._get_client()
         twiml = build_stream_twiml(stream_url, parameters)
-        call = await asyncio.to_thread(
-            client.calls.create,
-            to=to,
-            from_=from_,
-            twiml=twiml,
-        )
+        kwargs: dict[str, Any] = {"to": to, "from_": from_, "twiml": twiml}
+        if amd_callback_url:
+            # Async AMD: the call connects (and the greeting starts) immediately; Twilio posts
+            # AnsweredBy to the callback once it has decided, after the beep for a machine. Sync
+            # AMD would hold a human in silence for several seconds before the greeting.
+            kwargs.update(
+                machine_detection="DetectMessageEnd",
+                async_amd="true",
+                async_amd_status_callback=amd_callback_url,
+                async_amd_status_callback_method="POST",
+            )
+        call = await asyncio.to_thread(client.calls.create, **kwargs)
         return call.sid
 
     async def hang_up(self, call_sid: str) -> None:

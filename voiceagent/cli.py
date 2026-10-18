@@ -33,6 +33,8 @@ def _print_result(result: CallResult) -> None:
         latencies.sort()
         typer.echo(f"Latency:   p50 {latencies[len(latencies)//2]:.0f}ms speech-to-speech ({len(latencies)} turns)")
     typer.echo(f"Cost:      ${result.cost.total_usd:.4f}")
+    if result.booking_ref or result.booked_slot:
+        typer.echo(f"Booking:   {result.booking_ref or '(pending follow-up)'} at {result.booked_slot}")
     if result.error:
         typer.echo(f"Errors:    {result.error}")
 
@@ -43,18 +45,22 @@ def test_voice(
     script: Optional[str] = typer.Option(
         None, help='Pipe-separated contact turns, e.g. "hi who is this|sounds good lets do it"'
     ),
+    book: bool = typer.Option(
+        False, "--book", help="Book into an offline demo calendar (real slot-offer flow, no keys)"
+    ),
 ) -> None:
     """Run a fully mocked call (no API keys). Drives the real pipeline with fake providers."""
 
     from tests.fakes import FakeLLM, FakeMediaStream, FakeSTT, FakeTTS
 
+    from .booking.demo import DemoBooker
+
     cfg = load_agent_config(config)
     settings = settings_from_env()
-    turns = (
-        [t.strip() for t in script.split("|") if t.strip()]
-        if script
-        else ["yeah sure who is this", "okay sounds good lets do it"]
-    )
+    default_turns = ["yeah sure who is this", "okay sounds good lets do it"]
+    if book:
+        default_turns += ["the first one works", "no that's all thanks"]
+    turns = [t.strip() for t in script.split("|") if t.strip()] if script else default_turns
     contact = {
         "name": "Test Contact",
         "phone": "+10000000000",
@@ -82,6 +88,7 @@ def test_voice(
         tts=FakeTTS(),
         # Mocked run: skip LLM pre-warm so it doesn't consume a scripted FakeLLM response.
         prewarm_llm=False,
+        booker=DemoBooker(cfg.booking_timezone) if book else None,
     )
     # A short silence timeout keeps the mocked run snappy.
     session.silence_timeout = 0.3
@@ -145,7 +152,15 @@ def _require_live_keys(settings) -> None:
         raise typer.Exit(1)
 
 
-def _live_call_runner(settings, stream_url: str):
+def _amd_url(settings, cfg) -> Optional[str]:
+    """Answering-machine-detection callback URL, when the agent wants voicemail detection."""
+
+    if cfg is None or not cfg.voicemail.detect or not settings.public_base_url:
+        return None
+    return settings.public_base_url.rstrip("/") + "/voice/amd"
+
+
+def _live_call_runner(settings, stream_url: str, cfg=None):
     """Return a CallRunner that places a Twilio call per contact.
 
     Correlation note: place_call returns a call SID (CA...) from the Twilio REST
@@ -174,7 +189,9 @@ def _live_call_runner(settings, stream_url: str):
                 "phone": contact["phone"],
                 "email": contact.get("email", ""),
                 "suggested_time": contact.get("suggested_time", ""),
+                "timezone": contact.get("timezone", ""),
             },
+            amd_callback_url=_amd_url(settings, cfg),
         )
         typer.echo(f"  placed call {sid} -> {contact.get('name','')} {contact['phone']}")
         return CallResult(
@@ -204,9 +221,9 @@ def dial(
 
     settings = settings_from_env()
     _require_live_keys(settings)
-    load_agent_config(config)  # validate before spending
+    cfg = load_agent_config(config)  # validate before spending
     stream_url = _stream_url(settings.public_base_url)
-    runner = _live_call_runner(settings, stream_url)
+    runner = _live_call_runner(settings, stream_url, cfg)
     contact = {"name": name, "phone": phone, "email": email, "suggested_time": time}
     asyncio.run(runner(contact))
     typer.echo("")
@@ -229,7 +246,7 @@ def run_list(
     contacts = asyncio.run(load_contacts(csv_path))
     typer.echo(f"Loaded {len(contacts)} contacts from {csv_path}")
     stream_url = _stream_url(settings.public_base_url)
-    runner = _live_call_runner(settings, stream_url)
+    runner = _live_call_runner(settings, stream_url, cfg)
     sink = build_outcome_sink(csv_path=csv_out)
     campaign = CampaignRunner(cfg, runner, outcome_sink=sink)
     summary = asyncio.run(campaign.run_list(contacts))
